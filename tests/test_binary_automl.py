@@ -168,7 +168,7 @@ def test_bad_data_is_rejected_without_mutation(binary_df, corruption):
         binary_df = binary_df[["target"]]
     original = binary_df.copy(deep=True)
     with pytest.raises(DataValidationError):
-        small_automl().fit(binary_df)
+        small_automl(preprocessing=None).fit(binary_df)
     pd.testing.assert_frame_equal(binary_df, original)
 
 
@@ -186,8 +186,11 @@ def test_invalid_input_and_too_small_classes(binary_df):
 def test_prediction_schema_is_explicit(binary_df):
     result = small_automl(n_trials=1).fit(binary_df)
     features = binary_df.drop(columns="target")
-    with pytest.raises(DataValidationError, match="columns"):
-        result.predict(features[features.columns[::-1]])
+    np.testing.assert_array_equal(result.predict(features[features.columns[::-1]]), result.predict(features))
+    with pytest.raises(DataValidationError, match="missing"):
+        result.predict(features.drop(columns=features.columns[0]))
+    with pytest.raises(DataValidationError, match="extra"):
+        result.predict(features.assign(extra=1))
     with pytest.raises(DataValidationError, match="2D"):
         result.predict(np.ones(6))
 

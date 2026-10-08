@@ -74,5 +74,5 @@ class ModelRegistry:
 ModelRegistry.register(ModelSpec(
     name="logistic_regression", estimator_class=LogisticRegression,
     tasks=frozenset({TaskType.BINARY}), search_space=suggest_logistic_regression,
-    default_params={"solver": "lbfgs", "max_iter": 1000}, n_jobs_parameter=None,
+    default_params={"solver": "lbfgs", "max_iter": 1000}, n_jobs_parameter=None, requires_scaling=True,
 ))

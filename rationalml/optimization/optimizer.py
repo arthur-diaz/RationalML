@@ -11,9 +11,11 @@ from sklearn.model_selection import StratifiedKFold
 from threadpoolctl import threadpool_limits
 
 from ..config import AutoMLConfig
+from ..data import validate_features
 from ..evaluation import MetricSpec
 from ..exceptions import OptimizationError
 from ..models.base import ModelSpec
+from ..preprocessing.builder import build_model_pipeline
 
 
 @dataclass
@@ -30,6 +32,7 @@ def optimize_model(
     metric: MetricSpec, config: AutoMLConfig,
 ) -> OptimizedModel:
     """Select hyperparameters by stratified CV, with seeded sequential trials."""
+    validate_features(X_train, preprocessing=config.preprocessing)
     folds = list(StratifiedKFold(
         n_splits=config.cv, shuffle=True, random_state=config.random_state,
     ).split(X_train, y_train))
@@ -38,9 +41,10 @@ def optimize_model(
         params = spec.parameters(spec.search_space(trial), config.random_state, config.n_jobs)
         scores = []
         for training_rows, validation_rows in folds:
-            estimator = spec.estimator_class(**params)
-            estimator.fit(X_train.iloc[training_rows], y_train.iloc[training_rows])
-            scores.append(metric.evaluate(estimator, X_train.iloc[validation_rows], y_train.iloc[validation_rows]))
+            fold_train = X_train.iloc[training_rows]
+            pipeline = build_model_pipeline(spec, params, fold_train, config.preprocessing)
+            pipeline.fit(fold_train, y_train.iloc[training_rows])
+            scores.append(metric.evaluate(pipeline, X_train.iloc[validation_rows], y_train.iloc[validation_rows]))
         trial.set_user_attr("fold_scores", scores)
         trial.set_user_attr("estimator_params", params)
         return float(np.mean(scores))

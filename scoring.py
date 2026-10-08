@@ -45,7 +45,7 @@ def opti(X, y, init_model, score, name: str, *, training_only: bool = False) -> 
     config = AutoMLConfig(
         target=init_model.target_name, models=[name], metric=metric_name,
         cv=init_model.nb_cv, n_trials=init_model.nb_iter, random_state=init_model.seed,
-        n_jobs=init_model.n_jobs, timeout=init_model.timeout, verbose=init_model.verbose,
+        n_jobs=init_model.n_jobs, timeout=init_model.timeout, verbose=init_model.verbose, preprocessing=None,
     )
     spec = legacy_model_registry(init_model).get(name)
     optimized = optimize_model(spec, X, y, metric, config)

@@ -1,9 +1,13 @@
 """Configuration contains options only, never training data."""
 
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from math import isfinite
+from typing import Literal
+
+from sklearn.base import BaseEstimator
 
 from .exceptions import ConfigurationError
+from .preprocessing.config import PreprocessingConfig
 from .tasks import TaskType, normalize_task
 
 
@@ -21,8 +25,21 @@ class AutoMLConfig:
     timeout: int | None = None
     verbose: int = 1
     positive_class: object | None = None
+    preprocessing: Literal["basic"] | PreprocessingConfig | BaseEstimator | None = None
 
     def __post_init__(self) -> None:
+        if isinstance(self.preprocessing, PreprocessingConfig):
+            self.preprocessing = replace(self.preprocessing)
+        elif isinstance(self.preprocessing, str):
+            if self.preprocessing != "basic":
+                raise ConfigurationError(
+                    "preprocessing must be None, 'basic' or a cloneable sklearn transformer. "
+                    "Use 'basic' instead of the removed V0.2.0 value 'auto'."
+                )
+        elif self.preprocessing is not None and not all(
+            callable(getattr(self.preprocessing, method, None)) for method in ("fit", "transform", "get_params")
+        ):
+            raise ConfigurationError("preprocessing must be None, 'basic' or a cloneable sklearn fit/transform transformer.")
         if not isinstance(self.target, str) or not self.target.strip():
             raise ConfigurationError("target must be a nonempty column name.")
         if isinstance(self.task, str) and self.task.strip().lower() == "auto":

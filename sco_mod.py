@@ -30,7 +30,7 @@ def sco_mod(init_model: local_optimizer, col_1=None, col_2=None) -> pd.DataFrame
             cv=init_model.nb_cv, n_trials=init_model.nb_iter,
             test_size=init_model.test_size, random_state=init_model.seed,
             n_jobs=init_model.n_jobs, timeout=init_model.timeout,
-            verbose=init_model.verbose, model_registry=registry,
+            verbose=init_model.verbose, model_registry=registry, preprocessing=None,
         ).fit(init_model.df)
         results.append(result)
         table = result.leaderboard.reset_index()

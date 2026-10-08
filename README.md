@@ -1,325 +1,352 @@
-# RationalML — fondations V0.1.1
+# RationalML — V0.2.1
 
-API Python pour la classification binaire, avec optimisation Optuna sur le train
-uniquement. Les six briques publiques sont `TaskType`, `AutoMLConfig`,
-`MetricRegistry`, `ModelRegistry`, `AutoML` et `AutoMLResult`.
+RationalML compare et optimise des modèles de classification binaire sur les
+variables choisies par le Data Scientist. **RationalML n'est pas un outil de
+feature engineering automatique. Il suppose par défaut que le Data Scientist
+fournit un DataFrame prêt pour la modélisation.**
 
-## Installation et utilisation
+Le Data Scientist garde la main sur le nettoyage, le choix des variables,
+le feature engineering et les transformations métier. RationalML prend en
+charge le split train/test, la cross-validation, Optuna, la comparaison des
+modèles, les métriques et les résultats.
 
-Depuis ce dossier, avec Python 3.10 ou plus :
+| `preprocessing` | Contrat |
+| --- | --- |
+| `None` **(défaut)** | Contrôle total du Data Scientist : aucune transformation des features |
+| `"basic"` | Commodité minimale : imputation, OneHotEncoding et scaling selon le modèle |
+| Transformer sklearn | Preprocessing utilisateur, cloné et ajusté à l'intérieur de chaque fold CV |
+
+## Installation et utilisation principale
+
+Python 3.10 ou plus, depuis ce dossier :
 
 ```powershell
 python -m venv .venv
 .\.venv\Scripts\python.exe -m pip install -e ".[boosting,legacy,test]"
 .\.venv\Scripts\python.exe -m pytest -q -p no:cacheprovider
+.\.venv\Scripts\python.exe -m pip check
 ```
 
-Le cœur requiert numpy, pandas, scikit-learn, Optuna et threadpoolctl. LightGBM et
-XGBoost sont dans l'extra `boosting`, chargé à la demande. `models="auto"`
-sélectionne les modèles enregistrés dont les dépendances sont installées ; un
-modèle explicitement demandé mais absent produit `MissingDependencyError`.
+Le cœur requiert numpy, pandas, scikit-learn, Optuna et threadpoolctl. LightGBM
+et XGBoost sont optionnels via l'extra `boosting`. `models="auto"` sélectionne
+les modèles enregistrés dont les dépendances sont installées ; une dépendance
+explicitement demandée mais absente produit `MissingDependencyError`.
 L'extra `legacy` fournit tqdm pour `local_optimizer`.
 
 ```python
-from rationalml import AutoML, AutoMLConfig
+from rationalml import AutoML
 
+# df_model : features déjà préparées par le Data Scientist, cible churn 0/1.
 result = AutoML(
     target="churn",
-    task="auto",
+    positive_class=1,
+    preprocessing=None,  # défaut
+    models="auto",
     metric="roc_auc",
-    models=["logistic_regression", "lightgbm", "xgboost"],
-    cv=5,
-    n_trials=30,
-    random_state=42,
-    positive_class=1,  # pour une cible 0/1
-).fit(df)
+).fit(df_model)
 
-predictions = result.predict(df.drop(columns="churn"))
-probabilities = result.predict_proba(df.drop(columns="churn"))
-positive_probabilities = result.predict_positive_proba(df.drop(columns="churn"))
-leaderboard = result.leaderboard
-test_metrics = result.test_metrics
-
-# Variante avec configuration indépendante des données :
-config = AutoMLConfig(target="churn", models="logistic_regression")
-result = AutoML(config).fit(df)
+predictions = result.predict(new_df_model)
+probabilities = result.predict_proba(new_df_model)
+p_churn = result.predict_positive_proba(new_df_model)
 ```
 
-`fit` exige un DataFrame avec des colonnes uniques, des features numériques ou
-booléennes finies et une cible sans valeur manquante à exactement deux classes.
-Aucune ligne n'est retirée, aucune feature n'est imputée, transformée ou
-discrétisée. La validation signale les données à préparer explicitement.
-Chaque classe doit conserver au moins `cv` observations dans le train, et les
-deux classes doivent être présentes dans le test.
+Avec `None`, les features doivent être numériques ou booléennes, sans NaN
+ni infini. RationalML n'impute, n'encode, ne scale et ne supprime aucune
+colonne, même pour LogisticRegression. Des catégories ou NaN produisent
+`DataValidationError`, avec les trois choix : préparer les données avant
+RationalML, utiliser `"basic"` ou fournir un transformer sklearn.
 
-À l'inférence, les colonnes du DataFrame doivent avoir les mêmes noms et le même
-ordre ; une matrice numpy de même largeur est aussi acceptée.
+## Option de convenance : basic
 
-## Contrat de classe positive binaire
-
-`AutoMLConfig.positive_class: object | None = None` est aussi accepté directement
-par `AutoML`. L'appartenance aux deux valeurs de la cible est vérifiée avant
-Optuna, à partir du train. L'encodage travaille sur une copie des labels :
-
-- Avec une valeur explicite, cette classe est toujours encodée en **1** et
-  l'autre en **0**, quel que soit leur ordre alphabétique ou numérique. Une
-  valeur absente de la cible produit `DataValidationError`. Les valeurs `0`,
-  `False` et les chaînes vides sont des choix explicites valides si présents.
-- Sans valeur explicite, une cible booléenne utilise `True` comme positive,
-  et une cible numérique exactement `{0, 1}` utilise `1`, sans avertissement.
-- Pour les autres labels comparables, le plus grand label selon leur ordre
-  naturel est choisi de manière déterministe, en conservant le comportement
-  V0.1. Un `UserWarning` précise la classe choisie et recommande de renseigner
-  `positive_class`. Ce choix ne dépend ni des fréquences ni de l'ordre des lignes.
-
-L'encodage binaire n'utilise plus `LabelEncoder`. `AutoMLResult` expose :
-
-- `positive_class` : label original correspondant à la classe interne 1 ;
-- `negative_class` : label original correspondant à la classe interne 0 ;
-- `classes_` : les labels originaux dans l'ordre **[negative_class, positive_class]**.
-
-`result.predict(X)` restitue les labels originaux. `result.predict_proba(X)`
-retourne une matrice de forme `(n_lignes, 2)`, avec **P(negative_class) en colonne
-0** et **P(positive_class) en colonne 1**. `predict_positive_proba(X)` retourne
-un vecteur 1D de forme `(n_lignes,)`, égal à `predict_proba(X)[:, 1]`.
-Ce contrat vaut aussi quand `positive_class=0` ou `positive_class=False`.
+Le mode `"basic"` est **« basic preprocessing, not feature engineering »**.
+Il reprend uniquement les transformations de V0.2.0, sur demande explicite.
+Par exemple, `df_raw` peut contenir age, income, country, is_customer et churn,
+avec des catégories et des valeurs manquantes :
 
 ```python
-# df["status"] contient "retained" et "churn".
-result = AutoML(
-    target="status", positive_class="churn", models="logistic_regression",
-).fit(df)
+basic_result = AutoML(
+    target="churn", positive_class=1, preprocessing="basic",
+    models="auto", metric="roc_auc",
+).fit(df_raw)
 
-assert result.positive_class == "churn"
-assert result.negative_class == "retained"
-# result.classes_ == ["retained", "churn"]
-p_churn = result.predict_positive_proba(df.drop(columns="status"))
+basic_result.predict(new_df_raw)
+basic_result.predict_positive_proba(new_df_raw)
 ```
 
-L'estimateur brut `result.best_model` travaille sur les labels internes 0/1.
-Les métriques optimisées en CV et calculées sur le test utilisent ce même
-encodage : precision, recall et f1 concernent la classe positive explicite ;
-roc_auc et average_precision utilisent sa probabilité. log_loss utilise aussi
-les labels/probabilités dans cet ordre. `result.label_encoder` est un helper
-binaire interne ; son type concret n'est plus sklearn.LabelEncoder. Utiliser
-les attributs et méthodes publics du résultat pour l'inférence.
-
-## Analyse du code initial et décisions de migration
-
-L'analyse initiale portait sur les six fichiers présents dans `ml`, qui ne
-contenait ni packaging, ni tests, ni dépôt Git. Les imports historiques vers
-le package `mlib`, ainsi que la casse des modules Strategy / Metrics, ne
-correspondaient à aucun package présent dans ce dossier.
-
-| Fichier initial | Responsabilité et constat |
+| Type brut | Transformation basic |
 | --- | --- |
-| `strategy.py` | Options, DataFrame, domaines Optuna, conversion de cible en place et discrétisation. |
-| `sco_mod.py` | Boucle modèles/métriques, optimisation sur toutes les données, rapports et Styler/Excel. |
-| `scoring.py` | Suggestions Optuna, CV, early stopping, pruning et choix des seuils mélangés ; API obsolètes et affectation du résultat de `append`. |
-| `report.py` | Split tardif, entraînement, early stopping sur le test, seuils ajustés sur le test, sauvegarde et présentation. |
-| `metrics.py` | Métriques usuelles, importances et utilitaires de seuil/aires partielles, avec dépendance Vertica inutilisée. |
-| `second_step.py` | Segmentation explicite et orchestration, erreurs avalées et sortie Styler. |
+| Entiers et flottants, y compris dtypes nullable | `SimpleImputer(strategy="median")`, puis scaling selon le modèle |
+| `bool` / `boolean` nullable | Représentation 0/1 et imputation par le mode, sans scaling |
+| `object`, `category`, `string` | Normalisation des manquants, imputation par le mode et `OneHotEncoder(handle_unknown="ignore", sparse_output=False)` |
+| Datetime, datetime avec timezone, timedelta | `DataValidationError` explicite |
 
-Le nouveau package est ajouté **à côté des modules historiques** pour conserver
-leurs imports locaux pendant la migration. Les domaines des sept algorithmes
-historiques sont déplacés dans `optimization/spaces.py`, avec copies
-indépendantes, puis utilisés par `local_optimizer` et le pont legacy. Les
-suggestions modernes utilisent `suggest_float(..., log=True)`.
+En mode basic, `ModelSpec.requires_scaling=True` active `StandardScaler` pour
+LogisticRegression ; LightGBM/XGBoost déclarent False et ne sont pas scalés.
+Ce champ n'a aucun effet avec `None` ou un transformer utilisateur.
 
-Les espaces LightGBM/XGBoost reprennent les bornes historiques. Pour la nouvelle
-LogisticRegression, l'espace est limité à L2 avec lbfgs, `C` entre 1e-4 et 1e4,
-`tol` entre 1e-4 et 1e-2, et 500 à 1000 itérations. Cela évite les combinaisons
-solver/penalty incompatibles et l'ancien domaine de C couvrant 17 ordres de
-grandeur. Les domaines historiques penalty/l1_ratio sont conservés dans les
-métadonnées pour une migration ultérieure ; le pont logistic legacy utilise
-également L2, avec lbfgs ou saga et les bornes C/tol/max_iter historiques.
+`FeatureSchema` est inféré uniquement sur les lignes d'entraînement du fold,
+puis sur le train complet du pipeline final. Les constantes sont conservées
+avec `UserWarning`. Une colonne entièrement manquante dans un train, y
+compris un fold, produit `DataValidationError` : aucun fold n'emprunte de
+statistique aux autres lignes. Les infinis et structures imbriquées sont
+rejetés ; aucune ligne ou colonne n'est supprimée silencieusement.
 
-## Isolation du test et contenu du résultat
+Les catégories doivent être des scalaires homogènes : chaînes ou nombres,
+sans mélange des deux familles. Les catégories pandas non observées dans
+le train ne sont pas apprises depuis les métadonnées du dtype. Une catégorie
+inconnue à l'inférence devient un bloc OneHot de zéros. Aucun `LabelEncoder`
+n'est appliqué aux features.
+
+`PreprocessingConfig` reste un réglage avancé facultatif du mode basic,
+avec les mêmes cinq options qu'en V0.2.0, sans ajout :
+
+```python
+from rationalml import AutoMLConfig, PreprocessingConfig
+
+config = AutoMLConfig(
+    target="churn", preprocessing=PreprocessingConfig(scale_numeric=False),
+)
+```
+
+Ses défauts sont median / most_frequent / onehot / scale_numeric="auto" /
+handle_unknown="ignore". Le numérique accepte aussi mean et most_frequent,
+le scaling accepte True/False, et handle_unknown accepte "error".
+
+## Option expert : transformer sklearn utilisateur
+
+Le Data Scientist fournit un transformer compatible sklearn, avec `fit`,
+`transform`, `get_params`, et clonable par `sklearn.base.clone`.
+Un `Pipeline`, un `ColumnTransformer` ou un transformer personnalisé convient.
+RationalML n'ajoute aucune transformation autour de cet objet.
+
+```python
+from sklearn.compose import ColumnTransformer
+from sklearn.impute import SimpleImputer
+from sklearn.pipeline import Pipeline
+from sklearn.preprocessing import OneHotEncoder, StandardScaler
+
+# Choix explicites du Data Scientist. country contient des chaînes ou None.
+my_column_transformer = ColumnTransformer([
+    ("numeric", Pipeline([
+        ("imputer", SimpleImputer(strategy="median")),
+        ("scaler", StandardScaler()),
+    ]), ["age", "income"]),
+    ("country", Pipeline([
+        ("imputer", SimpleImputer(strategy="most_frequent", missing_values=None)),
+        ("encoder", OneHotEncoder(handle_unknown="ignore", sparse_output=False)),
+    ]), ["country"]),
+])
+
+expert_result = AutoML(
+    target="churn", positive_class=1, preprocessing=my_column_transformer,
+    models="logistic_regression", metric="roc_auc",
+).fit(df_raw)
+
+expert_result.predict(new_df_raw)
+expert_result.predict_proba(new_df_raw)
+```
+
+Adapter l'imputer aux données fournies : l'exemple utilise None pour les
+catégories, plutôt que NaN, défaut sklearn. Le transformer est responsable
+de ses dtypes, valeurs et transformations. RationalML vérifie seulement la
+structure et les colonnes brutes dans ce mode.
+
+**À chaque fold**, RationalML appelle `clone(user_transformer)`, construit un
+Pipeline neuf avec un estimateur neuf, puis ajuste le tout sur le fold train.
+Le fold validation est seulement transformé. Pour le fit final, RationalML
+clone encore le transformer et l'ajuste sur le train complet, jamais sur le
+holdout. L'objet fourni n'est pas ajusté ni modifié par RationalML ; le
+clonage sklearn standard ne reprend pas son éventuel état déjà appris.
+Un transformer dont le clonage renvoie la même instance est rejeté.
+Voir le [contrat de clone](https://scikit-learn.org/1.5/modules/generated/sklearn.base.clone.html).
+
+Les transformations réalisées en amont restent sous la responsabilité du
+Data Scientist. Pour couvrir par la CV les transformations apprenant des
+statistiques, fournir leur transformer dans `preprocessing`.
+
+## Validation et inférence
+
+`fit` exige un DataFrame avec des noms de colonnes uniques, non vides et de
+type chaîne, et une cible sans valeur manquante à exactement deux classes.
+Chaque classe doit conserver au moins `cv` observations dans le train ; les
+deux classes doivent être présentes dans le test.
+
+Dans les trois modes, un DataFrame d'inférence doit contenir exactement les
+mêmes noms de features, chacun une fois. Leur ordre peut changer : RationalML
+les réordonne selon `feature_names`. Les colonnes manquantes, supplémentaires
+ou dupliquées provoquent `DataValidationError`. L'entrée est copiée avant son
+utilisation par le pipeline.
+
+- `None` : données prêtes, numériques/booléennes, sans NaN ni infini ; aucune
+  inférence de schéma, recherche de constantes ou transformation automatique.
+- `"basic"` : contrôles de types V0.2 ; int/float compatibles, booléens ou 0/1,
+  catégories de même famille. Les NaN et catégories inconnues sont acceptés,
+  y compris un batch entièrement manquant, grâce au preprocessing ajusté.
+- Transformer : données brutes transmises sans les règles de `FeatureSchema`
+  basic ; le propre contrat de dtypes du transformer fait foi.
+
+Une matrice numpy de même largeur est reconstruite avec les noms dans l'ordre
+d'origine. Le mode basic exige un DataFrame si des catégories sont présentes.
+Le DataFrame reste recommandé pour le mode expert et ses sélections par nom.
+
+## Classe positive et résultats
+
+Le contrat V0.1.1 reste inchangé. `positive_class` explicite est vérifiée
+parmi les deux labels puis encodée en 1 ; l'autre classe devient 0.
+Sans choix explicite : booléens → True, cible exactement {0, 1} → 1, autres
+labels comparables → plus grand label selon l'ordre naturel avec `UserWarning`
+précisant le choix et recommandant `positive_class`.
+Le choix est déterministe, indépendant des fréquences et de l'ordre des lignes.
+Une classe positive absente produit `DataValidationError` ; 0, False et une
+chaîne vide restent des choix explicites valides lorsqu'ils sont présents.
+
+`AutoMLResult` expose `positive_class`, `negative_class` et `classes_` dans
+l'ordre **[negative_class, positive_class]**. `predict` restitue les labels
+originaux. `predict_proba` retourne P(negative_class) en colonne 0 et
+P(positive_class) en colonne 1 ; `predict_positive_proba` retourne ce dernier
+vecteur 1D. Precision, recall, f1, roc_auc et average_precision utilisent la
+classe interne 1, y compris si le label original positif est 0 ou False.
+
+- `task`, `target`, `config` : tâche binaire, cible et copie validée des options.
+- `leaderboard` : rank, cv_score et cv_std, triés selon la direction de la métrique.
+- `cv_results` : modèle, essai, score moyen et scores des folds Optuna.
+- `best_model_name`, `best_params` : gagnant CV et paramètres de son estimateur.
+- `best_model` : **`sklearn.pipeline.Pipeline`**. Avec None : étape `estimator`
+  seule. Avec basic ou transformer : `preprocessing`, puis `estimator`.
+  Les attributs natifs sont dans `best_model.named_steps["estimator"]` ;
+  ses labels restent les 0/1 internes. Utiliser `AutoMLResult` pour les labels
+  originaux et les contrôles de colonnes.
+- `metrics`, `test_metrics` : les huit métriques binaires du seul gagnant,
+  calculées lors d'une évaluation unique sur le test.
+- `feature_names` : noms bruts dans l'ordre d'entraînement.
+- `feature_schema` : schéma du train final en mode basic ; None ailleurs.
+- `transformed_feature_names` : noms fournis au modèle, ou None si indisponibles.
+- `feature_importance` : DataFrame brut, colonnes `feature`, `importance`
+  numérique et `source_feature`. Coefficients logistiques signés et importances
+  natives des arbres, triés par valeur absolue. Aucun Styler.
+- `train_indices`, `test_indices` : positions des lignes, même avec index dupliqué.
+
+Avec None, les noms et source_feature sont ceux d'origine. Avec basic,
+`ColumnTransformer.get_feature_names_out()` fournit par exemple
+`categorical__country_France`. Le mapping source utilise les slices de sortie
+et les catégories apprises, sans découper les noms sur des underscores.
+Les caractères spéciaux sont échappés pour LightGBM/XGBoost.
+
+Avec un transformer utilisateur, RationalML essaie `get_feature_names_out`
+et vérifie la cohérence des noms. Si les noms sont indisponibles ou non fiables,
+`transformed_feature_names=None` et `feature_importance` est un DataFrame vide
+avec `UserWarning`. Le fit et l'inférence restent utilisables. Quand les noms
+sont disponibles, `source_feature` reste manquant : aucune filiation n'est
+inventée pour les transformations utilisateur.
+
+## Protocole et responsabilités
 
 ```text
-DataFrame validé et copié
-    ├── TEST stratifié, réservé
+FULL DATA
+    ├── TEST réservé
     └── TRAIN
-          ├── Optuna + StratifiedKFold
-          ├── meilleurs paramètres et sélection du modèle par score CV
-          └── entraînement final sur tout TRAIN
-                    └── évaluation unique sur TEST
+          ├── CV / Optuna
+          │     ├── fold TRAIN : Pipeline neuf, fit sur ces lignes uniquement
+          │     └── fold VALIDATION : transform et évaluation
+          ├── choix du modèle et des paramètres par score CV
+          └── Pipeline final neuf, fit sur TRAIN complet
+                    └── transform et évaluation unique sur TEST
 ```
 
-Le test n'entre jamais dans l'optimiseur, la sélection des paramètres/modèles,
-le choix d'un seuil ou l'early stopping. La V0.1 désactive l'early stopping et
-le pruning, et utilise les prédictions natives des estimateurs. Seul le gagnant
-CV est réentraîné et évalué sur le test ; les autres modèles restent dans le
-leaderboard CV.
+Le holdout ne participe à aucun fit, à Optuna, ni à la sélection des modèles.
+Le mode basic construit un preprocessor neuf ; le mode expert clone celui
+fourni. Aucun transformer fitted n'est partagé entre folds. Early stopping
+et pruning restent désactivés, et les métriques utilisent les prédictions
+natives des estimateurs.
 
-- `leaderboard` : DataFrame indexé par modèle, avec rank, cv_score et cv_std,
-  trié suivant maximize/minimize. Les ex æquo conservent l'ordre des modèles.
-- `cv_results` : DataFrame brut avec modèle, numéro d'essai, score moyen et
-  score de chaque fold, pour tous les essais terminés.
-- `best_params` : paramètres effectifs de l'estimateur final, dont le seed.
-- `test_metrics` : les huit métriques binaires du seul gagnant ; `metrics`
-  en contient une copie pour l'accès générique.
-- `feature_importance` : DataFrame numérique ; importances natives des arbres
-  ou coefficients signés de LogisticRegression, triés par valeur absolue.
-- `config` : copie validée de la configuration ; `train_indices` et
-  `test_indices` sont les positions des lignes, même avec un index dupliqué.
-- `positive_class`, `negative_class` et `classes_` : contrat de labels et de
-  colonnes de probabilités décrit ci-dessus.
+Optuna utilise des essais séquentiels et un sampler seedé. `n_jobs` contrôle
+les threads des modèles et le calcul numérique. `n_trials` et `timeout`
+s'appliquent par modèle ; un timeout réel peut modifier le nombre d'essais
+terminés malgré un seed identique. `verbose` pilote le logger RationalML.
 
-Les essais Optuna sont séquentiels et leur sampler est seedé. `n_jobs` vaut -1
-ou un entier positif, et contrôle les threads des modèles, avec threadpoolctl
-pour le calcul numérique. `n_trials` et `timeout` s'appliquent **par modèle**.
-Un timeout dépend du temps réel : il peut changer le nombre d'essais terminés,
-même avec un seed identique. `verbose` contrôle les messages du logger
-`rationalml.automl`, sans modifier la configuration globale d'Optuna.
+Les six responsabilités techniques restent dans les composants existants :
+configuration, validation, construction du pipeline, optimisation, inférence,
+extraction des importances. Aucune nouvelle classe de production ni nouveau
+moteur n'est ajouté. Le chemin par défaut passe de six opérations à trois :
 
-## Arborescence et responsabilités
+| Opération du chemin par défaut | V0.2.0 auto | V0.2.1 None |
+| --- | --- | --- |
+| Valider les entrées | Oui | Oui |
+| Inférer les types et diagnostiquer les colonnes | Oui | Non |
+| Construire/ajuster le preprocessing automatique | Oui | Non |
+| Entraîner les modèles par CV puis le gagnant | Oui | Oui |
+| Valider les colonnes et prédire | Oui | Oui |
+| Récupérer les noms transformés et le mapping OneHot | Oui | Non, noms d'origine |
 
-```text
-ml/
-├── .gitignore
-├── pyproject.toml
-├── README.md
-├── rationalml/
-│   ├── __init__.py              # exports publics
-│   ├── automl.py                # orchestration du cycle ML
-│   ├── config.py                # options et validation
-│   ├── data.py                  # validation et encodage binaire explicite
-│   ├── result.py                # résultats bruts et inférence
-│   ├── exceptions.py            # erreurs explicites
-│   ├── legacy.py                # adaptation des sept noms historiques
-│   ├── tasks/
-│   │   ├── __init__.py          # exports des tâches
-│   │   └── base.py              # Enum, normalisation et résolution binaire
-│   ├── models/
-│   │   ├── __init__.py          # exports modèles
-│   │   ├── base.py              # ModelSpec et importances
-│   │   └── registry.py          # enregistrement et chargement des modèles
-│   ├── evaluation/
-│   │   ├── __init__.py          # exports évaluation
-│   │   ├── metrics.py           # MetricSpec, dispatch et évaluation
-│   │   └── registry.py          # registre des huit métriques binaires
-│   └── optimization/
-│       ├── __init__.py          # namespace optimisation
-│       ├── optimizer.py         # Optuna et CV sur train uniquement
-│       └── spaces.py            # espaces adaptés et domaines historiques
-├── tests/
-│   ├── conftest.py              # petit dataset make_classification
-│   ├── test_config_validation.py
-│   ├── test_task_type.py
-│   ├── test_metric_registry.py
-│   ├── test_model_registry.py
-│   ├── test_binary_automl.py
-│   ├── test_legacy_compatibility.py
-│   ├── test_positive_class.py
-│   └── test_legacy_partial_areas.py
-├── strategy.py                 # legacy conservé et corrigé
-├── sco_mod.py                  # pont vers le nouveau moteur
-├── scoring.py                  # contrat train-only explicite
-├── report.py                   # anciens helpers retirés explicitement
-├── metrics.py                  # utilitaires historiques conservés
-└── second_step.py              # segmentation legacy sans erreurs masquées
-```
+`preprocessing/config.py` conserve les options basic ; `schema.py` le schéma
+basic et les contrôles de colonnes ; `builder.py` les trois branches du
+pipeline et les noms. Les fonctions V0.2 restantes sont utiles au mode basic
+ou au cycle d'entraînement. L'étape passthrough du mode None est supprimée.
 
-Le cœur n'importe aucun de ces six modules legacy. Le chemin historique
-`local_optimizer` → `sco_mod` → nouveau moteur reste utilisable, de même que
-`second_step`. `scoring.opti` reste disponible pour un train déjà isolé, et
-`Metrics` conserve ses utilitaires, avec les aires partielles retirées ci-dessous.
-`report.py` reste importable, mais ses anciens
-helpers d'entraînement/reporting lèvent une erreur de migration explicite.
+Un modèle s'ajoute via `ModelRegistry.register(ModelSpec(...))`, une métrique
+via `MetricRegistry.register(MetricSpec(...))`. Le modèle doit accepter
+random_state, déclarer `n_jobs_parameter` (ou None), supporter predict_proba
+et définir `requires_scaling` pour basic. AutoML reste inchangé.
 
-Pour ajouter une métrique ou un modèle : créer un `MetricSpec` / `ModelSpec`,
-puis appeler `MetricRegistry.register` / `ModelRegistry.register`. Le moteur
-reste inchangé. Un modèle enregistré doit accepter random_state et déclarer
-son paramètre de threads via `n_jobs_parameter` (ou None). La V0.1 requiert
-predict_proba pour les huit métriques finales.
+## Migration V0.2.0 → V0.2.1
 
-## Retrait des aires partielles legacy
+- Le défaut est désormais `preprocessing=None` : le DataFrame doit être prêt.
+  Utiliser explicitement `"basic"` pour retrouver les transformations V0.2.0.
+- `preprocessing="auto"` est retiré avec `ConfigurationError` et indication
+  de migration. `models="auto"`, `task="auto"` et le réglage avancé
+  `scale_numeric="auto"` restent valides.
+- Le pipeline None ne contient plus d'étape `preprocessing`. Les accès directs
+  à `best_model.named_steps["preprocessing"]` doivent être conditionnels.
+- `feature_schema` est None hors basic. Les résultats numériques peuvent
+  changer si le scaling automatique V0.2.0 n'est plus demandé.
+- Un transformer sans noms exploitables produit une importance indisponible
+  avec warning, sans empêcher l'entraînement.
 
-La V0.1.1 applique l'option B : **`Metrics.sub_area` et `Metrics.sub_area_pr`
-lèvent systématiquement `LegacyAPIError`**. Leurs noms et signatures restent
-présents pour fournir une erreur de migration explicite.
+## Compatibilité legacy
 
-L'audit de `metrics.py` confirme que `sub_area` détruisait l'information des
-probabilités en les convertissant en 0/1 avant de reconstruire la courbe ROC.
-`sub_area_pr` pouvait intégrer un intervalle entier au-delà de la borne de
-recall, sans interpolation à cette borne. Aucun contrat suffisamment précis
-ne définit la borne métier, l'interpolation et la normalisation souhaitées.
-Les calculs incorrects ont donc été supprimés, sans remplacement implicite.
+Le package s'importe avec `from rationalml import AutoML`. Les six modules
+historiques restent séparés du cœur. `local_optimizer` → `sco_mod` et
+`second_step` utilisent des DataFrames numériques/booléens sans preprocessing
+automatique. Leurs résultats sont des DataFrames bruts ; les AutoMLResult
+sont disponibles dans `init_model.results_` / `result_`.
 
-Les métriques enregistrées `roc_auc` et `average_precision` restent disponibles
-pour une évaluation globale ; elles ne remplacent pas une aire partielle
-équivalente. Un retour des aires partielles nécessitera un contrat métier
-précis et des tests mathématiques dédiés.
+Les seuils, pruning et early stopping legacy restent retirés avec warning.
+Excel, model_save, model_select et class_weight="auto" du chemin historique
+lèvent `LegacyAPIError`. Les poids fixes restent utilisables.
+`scoring.opti` exige `training_only=True` et des labels train 0/1 ; sa seconde
+sortie contient cv_std. Les anciens helpers `scoring.objective` et ceux de
+`report.py` conservent leurs erreurs de migration explicites.
 
-## Changements incompatibles explicites
+`Metrics.sub_area` et `Metrics.sub_area_pr` restent retirées avec
+`LegacyAPIError` depuis V0.1.1 : les anciens calculs ROC/PR partiels étaient
+incorrects et leur contrat métier ambigu. `roc_auc` et `average_precision`
+évaluent les courbes globales sans prétendre remplacer ces aires partielles.
 
-Le projet s'appelle **RationalML**, et le package Python s'importe avec
-`from rationalml import AutoML`. Les scripts clients doivent mettre à jour
-leurs imports vers `rationalml`. La version reste 0.1.1. Pour installer les
-extras à partir d'une distribution publiée, le nom est `RationalML[boosting]` ;
-l'installation locale décrite ci-dessus utilise le même projet.
+## Vérification et limites
 
-Ajouts V0.1.1 :
+Vérification V0.2.1 : **231 tests réussis en 12,75 s**, **1 warning attendu**
+(classe positive implicite sur labels chaînes), **0 échec et 0 skip**.
+Les 204 cas V0.2.0 sont conservés et 27 cas complètent le nouveau contrat.
+`pip check` retourne `No broken requirements found.` et l'installation
+éditable expose `RationalML==0.2.1`. Les trois exemples README sont exécutés
+avec des DataFrames représentatifs et un budget réduit à un essai / trois folds.
 
-- Les cibles non standards sans `positive_class` émettent maintenant un
-  `UserWarning`. Leur choix positif par défaut reste celui de V0.1.
-- Une classe positive explicite peut changer l'ordre des colonnes de
-  `predict_proba` et le sens des métriques par rapport à V0.1. Utiliser
-  `classes_` ou `predict_positive_proba` pour connaître P(classe positive).
-- Les appels à `Metrics.sub_area` / `sub_area_pr` échouent explicitement avec
-  `LegacyAPIError`, au lieu de produire un nombre incorrect.
+Les tests V0.1.x et V0.2 sont conservés, avec attentes adaptées au nouveau
+défaut. Les jeux mixtes et les tests de fuite V0.2 demandent explicitement basic.
+Les nouveaux fichiers `test_preprocessing_modes.py` et
+`test_custom_preprocessing.py` couvrent le défaut sans transformation, les
+erreurs de préparation, le clonage par fold, l'absence de holdout dans fit,
+les transformers sklearn et personnalisés, les noms indisponibles, la
+sérialisation, la reproductibilité et l'absence de mutation.
 
-Ruptures de la migration V0.1 toujours applicables :
+Les tests de fuite basic tracent les médianes, catégories et scaling propres
+à chaque fold. Les tests expert enregistrent les instances et les indices
+vus par fit/transform, et vérifient le fit final uniquement sur le train.
 
-- `sco_mod` et `second_step` retournent un DataFrame brut, avec un schéma de
-  leaderboard CV, au lieu d'un Styler et des anciennes colonnes de reporting.
-  Les `AutoMLResult` legacy sont disponibles dans `init_model.results_` et
-  `init_model.result_` pour un appel direct à sco_mod.
-- Les options legacy de seuil, pruning et early stopping sont retirées du
-  moteur et produisent un avertissement à chaque appel à sco_mod. Les
-  métriques de classification utilisent les prédictions natives.
-- `excel_report`, `model_save`, `model_select` et `class_weight="auto"` du
-  chemin legacy produisent `LegacyAPIError`. Le calcul historique automatique
-  des poids utilisait la cible entière. Les poids numériques fixes restent
-  utilisables dans le pont legacy.
-- `scoring.opti` requiert `training_only=True`, avec labels train 0/1. Sa
-  seconde sortie contient cv_std ; les anciennes variances roc/pr sont retirées.
-  `scoring.objective`, `report.prediction`, `prediction_next` et `report_global`
-  lèvent `LegacyAPIError`, car leurs contrats ne prouvent pas l'isolation du test.
-- `_pandas_sets` et `discretize` travaillent désormais sur une copie. Les
-  appels à discretize doivent récupérer sa valeur de retour.
-- Les imports sont `rationalml` pour la nouvelle API et les noms locaux
-  en minuscules pour les modules historiques de ce dossier. Aucun faux package
-  `mlib` n'est créé.
-
-## Vérification et suite de migration
-
-Vérification V0.1.1 : **129 tests réussis en 3,45 s**, avec **un avertissement
-attendu** dans le test V0.1 utilisant des chaînes sans `positive_class`.
-Les 98 tests V0.1 sont conservés sans modification ; 31 cas supplémentaires
-couvrent le contrat de classe positive et le retrait des aires partielles.
-Installation éditable, imports depuis le dossier parent et `pip check` réussis.
-Environnement testé : Python 3.12.6, pandas 3.0.6, numpy 2.5.3,
-scikit-learn 1.9.1, Optuna 5.0.0, LightGBM 4.7.0 et XGBoost 3.4.1.
-
-La suite couvre validation, tâches, registres extensibles, fit/inférence,
-labels originaux, absence de mutation, log_loss minimisée, reproductibilité
-des trois modèles et fonctionnement des sept alias legacy. Les tests de fuite
-tracent les lignes vues par Optuna, chaque fit et chaque prédiction ; ils
-vérifient l'évaluation unique du test. Un autre test perturbe uniquement les
-features du test et exige des hyperparamètres, un gagnant et des scores CV
-inchangés. Les erreurs d'entraînement et des segments remontent au caller.
-
-Les nouveaux tests vérifient `churn` encodé en 1 pour les trois modèles,
-l'inférence et les colonnes de probabilités, les six métriques liées aux labels
-en CV et sur test, les classes explicites absentes, les choix par défaut 0/1 et
-booléens, les choix explicites 0/False, les avertissements déterministes et
-`LegacyAPIError` pour les deux aires partielles.
-
-Avant V0.2 : définir la migration des options et schémas legacy retirés,
-préciser le contrat métier d'un éventuel retour des aires partielles et élargir
-la matrice CI aux versions de dépendances annoncées. Un éventuel retour de l'early stopping devra
-utiliser une validation issue du train exclusivement. Multiclass, régression,
-MLflow, Excel, SHAP, calibration, ranking/déciles et preprocessing avancé
-restent hors de cette étape.
+La mémoire du OneHot dense basic et la matrice CI des versions minimales
+restent à surveiller. Les colonnes entièrement manquantes dans un fold basic
+restent une erreur ; les constantes basic peuvent avertir par fold/essai.
+Aucune dépendance n'est ajoutée et aucun feature engineering automatique
+n'est introduit. Multiclass, régression, datetime automatique, sélection de
+features, outliers, logs, target encoding, encodage haute cardinalité, SHAP,
+MLflow et Excel restent hors V0.2.1. Aucune fonctionnalité V0.3 n'est ajoutée.
