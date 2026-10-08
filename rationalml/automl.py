@@ -13,9 +13,11 @@ from threadpoolctl import threadpool_limits
 from .config import AutoMLConfig
 from .data import BinaryLabelEncoder, MulticlassLabelEncoder, validate_dataframe
 from .evaluation import MetricRegistry, evaluate_metrics
+from .evaluation.baseline import evaluate_baseline
 from .exceptions import ConfigurationError, DataValidationError, UnsupportedTaskError
 from .models import ModelRegistry
 from .models.base import feature_importance
+from .optimization.cv import make_cv_splits
 from .optimization.optimizer import optimize_model
 from .preprocessing.builder import build_model_pipeline, transformed_feature_info
 from .result import AutoMLResult
@@ -93,17 +95,25 @@ class AutoML:
             y_train = pd.Series(encoder.transform(original_train), index=original_train.index)
             y_test = pd.Series(encoder.transform(original_test), index=original_test.index)
 
+        folds = make_cv_splits(X_train, y_train, task, config)
+        baseline_name, baseline_fold_scores = evaluate_baseline(y_train, metric, task, folds)
+        baseline_score = float(np.mean(baseline_fold_scores))
         optimized = []
         for spec in specs:
             if config.verbose:
                 logger.info("Optimizing %s using %s on train only", spec.name, metric.name)
-            optimized.append(optimize_model(spec, X_train, y_train, metric, config))
+            optimized.append(optimize_model(spec, X_train, y_train, metric, config, folds=folds))
         # Winner selection only sees CV scores. Stable ties retain model order.
         ordered = sorted(optimized, key=lambda item: item.score, reverse=metric.direction == "maximize")
         best = ordered[0]
         leaderboard = pd.DataFrame([{
             "model": item.spec.name, "rank": rank,
             "cv_score": item.score, "cv_std": float(np.std(item.fold_scores)),
+            "cv_min": float(np.min(item.fold_scores)), "cv_max": float(np.max(item.fold_scores)),
+            "improvement_vs_baseline": (
+                item.score - baseline_score if metric.direction == "maximize" else baseline_score - item.score
+            ),
+            "n_trials_completed": len(item.cv_results),
         } for rank, item in enumerate(ordered, start=1)]).set_index("model")
         best_model = build_model_pipeline(best.spec, best.params, X_train, config.preprocessing)
         with threadpool_limits(limits=config.n_jobs if config.n_jobs > 0 else None):
@@ -122,5 +132,7 @@ class AutoML:
             config=config, feature_names=tuple(X.columns), label_encoder=encoder,
             train_indices=tuple(int(row) for row in train_rows),
             test_indices=tuple(int(row) for row in test_rows),
+            baseline_name=baseline_name, baseline_score=baseline_score,
+            baseline_cv_std=float(np.std(baseline_fold_scores)), baseline_fold_scores=baseline_fold_scores,
             feature_schema=best_model.feature_schema_, transformed_feature_names=transformed_names,
         )

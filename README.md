@@ -1,4 +1,4 @@
-# RationalML — V0.3.0
+# RationalML — V0.4.0
 
 RationalML compare et optimise des modèles de classification binaire,
 multiclass et de régression sur les
@@ -272,7 +272,7 @@ de la tâche.
 
 - `task`, `target`, `config`, `primary_metric` : tâche résolue, cible, copie
   validée des options et métrique effective.
-- `leaderboard` : rank, cv_score et cv_std, triés selon la direction de la métrique.
+- `leaderboard` : scores et diagnostics CV, triés selon la direction de la métrique.
 - `cv_results` : modèle, essai, score moyen et scores des folds Optuna.
 - `best_model_name`, `best_params` : gagnant CV et paramètres de son estimateur.
 - `best_model` : **`sklearn.pipeline.Pipeline`**. Avec None : étape `estimator`
@@ -306,12 +306,43 @@ avec `UserWarning`. Le fit et l'inférence restent utilisables. Quand les noms
 sont disponibles, `source_feature` reste manquant : aucune filiation n'est
 inventée pour les transformations utilisateur.
 
+## Baseline et stabilité CV
+
+Une baseline naïve est évaluée sur **TRAIN uniquement**, avec la même métrique
+principale et exactement les mêmes folds que les modèles :
+[`DummyClassifier(strategy="prior")`](https://scikit-learn.org/1.5/modules/generated/sklearn.dummy.DummyClassifier.html)
+en binary/multiclass, et
+[`DummyRegressor(strategy="mean")`](https://scikit-learn.org/1.5/modules/generated/sklearn.dummy.DummyRegressor.html)
+en regression. Elle apprend seulement la cible, sans preprocessing des features
+ni Optuna. Elle reste un diagnostic, hors candidats à `best_model`, sans refit
+sur le train complet ni métrique calculée sur TEST.
+
+```python
+result.baseline_name         # "dummy_classifier" ou "dummy_regressor"
+result.baseline_score        # moyenne des scores des folds
+result.baseline_cv_std       # np.std(...), ddof=0
+result.baseline_fold_scores  # tuple des scores, dans l'ordre des folds
+result.leaderboard
+# rank, cv_score, cv_std, cv_min, cv_max, improvement_vs_baseline, n_trials_completed
+```
+
+`cv_std`, `cv_min` et `cv_max` décrivent les folds du meilleur trial de chaque
+modèle, sans score ni seuil arbitraire de stabilité. La convention de l'écart
+type reste `ddof=0`. `improvement_vs_baseline` vaut modèle − baseline pour
+maximize, baseline − modèle pour minimize : ROC-AUC 0,8 contre 0,5 donne +0,3 ;
+RMSE 8 contre 10 donne +2. Une valeur négative indique une performance inférieure
+à la référence. Le classement et le gagnant restent fondés uniquement sur
+`cv_score`. `n_trials_completed` compte seulement les essais Optuna `COMPLETE`,
+utile avec timeout ; FAIL et PRUNED sont exclus. Aucun timing n'est ajouté.
+
 ## Protocole et responsabilités
 
 ```text
 FULL DATA
     ├── TEST réservé
     └── TRAIN
+          ├── encodage cible si classification, création unique des folds
+          ├── baseline CV sur ces folds, diagnostic cible uniquement
           ├── CV / Optuna
           │     ├── fold TRAIN : Pipeline neuf, fit sur ces lignes uniquement
           │     └── fold VALIDATION : transform et évaluation
@@ -343,6 +374,14 @@ via `MetricRegistry.register(MetricSpec(...))`. Le modèle doit accepter
 random_state, déclarer `n_jobs_parameter` (ou None), supporter predict_proba en classification
 et définir `requires_scaling` pour basic. Aucune modification du moteur n'est
 nécessaire pour l'enregistrer.
+
+## Migration V0.3.0 → V0.4.0
+
+Le leaderboard conserve ses trois colonnes et en ajoute quatre. Les consommateurs
+exigeant une liste exacte de colonnes doivent adapter leur sélection.
+`AutoMLResult` ajoute les quatre champs baseline ; une construction manuelle
+doit les renseigner. `cv_results`, les métriques, les search spaces, la sélection
+et les trois modes preprocessing gardent leurs contrats V0.3.
 
 ## Migration V0.2.1 → V0.3.0
 
@@ -395,16 +434,18 @@ incorrects et leur contrat métier ambigu. `roc_auc` et `average_precision`
 
 ## Vérification et limites
 
-Vérification V0.3.0 : **330 tests réussis en 20,69 s**, **99 nouveaux cas**,
+Vérification V0.4.0 : **360 tests réussis en 29,42 s**, **30 nouveaux cas**,
 **1 warning attendu** (classe positive implicite sur labels chaînes),
-**0 échec et 0 skip**. LightGBM et XGBoost sont installés et leurs tests exécutés.
+**0 échec et 0 skip**. LightGBM et XGBoost sont installés et testés.
 `pip check` retourne `No broken requirements found.` ; les versions API et
-installation éditable sont `RationalML==0.3.0`.
+installation éditable sont `RationalML==0.4.0`.
 
-Les 231 cas V0.2.1 sont conservés, avec les attentes « tâche non implémentée »
-adaptées. Les nouveaux tests couvrent les six modèles, les trois modes de
-preprocessing, les métriques, les labels originaux, les probabilités,
-les coefficients par classe, la sérialisation et la reproductibilité.
+Les 330 cas V0.3 sont conservés. Les tests V0.4 vérifient les baselines des trois
+tâches, les mêmes folds partagés, les diagnostics du meilleur trial, les essais
+COMPLETE et la reproductibilité. Ils tracent les fits/prédictions des dummies,
+excluent le holdout et le preprocessing, et prouvent que la baseline ne change
+ni les essais ni le gagnant. Le test de budget raccourci simule une étude
+terminée sans dépendre d'un temps d'exécution réel.
 Les tests de fuite des trois tâches tracent les instances, les indices vus
 par fit/transform et les médianes propres à chaque fold. Ils vérifient le
 fit final sur le train seulement et la stabilité de la sélection lorsque
@@ -417,4 +458,4 @@ Aucune dépendance n'est ajoutée et aucun feature engineering automatique
 n'est introduit. Datetime automatique, sélection de
 features, outliers, logs, target encoding, encodage haute cardinalité, SHAP,
 MLflow, Excel, ranking/déciles, optimisation de seuil, calibration, CatBoost
-et group/time split restent hors V0.3. Aucune fonctionnalité V0.4 n'est ajoutée.
+et group/time split restent hors V0.4. Aucune fonctionnalité V0.5 n'est ajoutée.

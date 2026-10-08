@@ -7,7 +7,6 @@ import numpy as np
 import optuna
 import pandas as pd
 from optuna.trial import TrialState
-from sklearn.model_selection import KFold, StratifiedKFold
 from threadpoolctl import threadpool_limits
 
 from ..config import AutoMLConfig
@@ -16,7 +15,8 @@ from ..evaluation import MetricSpec
 from ..exceptions import OptimizationError
 from ..models.base import ModelSpec
 from ..preprocessing.builder import build_model_pipeline
-from ..tasks import TaskType, resolve_task
+from ..tasks import resolve_task
+from .cv import CVSplits, make_cv_splits
 
 
 @dataclass
@@ -31,14 +31,13 @@ class OptimizedModel:
 def optimize_model(
     spec: ModelSpec, X_train: pd.DataFrame, y_train: pd.Series,
     metric: MetricSpec, config: AutoMLConfig,
+    *, folds: CVSplits | None = None,
 ) -> OptimizedModel:
     """Select hyperparameters by task-appropriate CV, with seeded sequential trials."""
     validate_features(X_train, preprocessing=config.preprocessing)
     task = resolve_task(config.task, y_train)
-    splitter = KFold if task is TaskType.REGRESSION else StratifiedKFold
-    folds = list(splitter(
-        n_splits=config.cv, shuffle=True, random_state=config.random_state,
-    ).split(X_train, y_train))
+    if folds is None:
+        folds = make_cv_splits(X_train, y_train, task, config)
 
     def objective(trial: optuna.Trial) -> float:
         params = spec.parameters(spec.search_space(trial), config.random_state, config.n_jobs, task=task)
@@ -63,6 +62,7 @@ def optimize_model(
     if not completed:
         raise OptimizationError(f"No trial completed for model {spec.name!r}.")
     best = study.best_trial
+    # One row per COMPLETE trial; this also supplies the successful trial count.
     rows = [{
         "model": spec.name, "trial": trial.number, "value": trial.value,
         **{f"fold_{i}": score for i, score in enumerate(trial.user_attrs["fold_scores"])},

@@ -40,11 +40,11 @@ def test_churn_is_internal_one_and_probability_columns_are_explicit(churn_df, mo
     optimizer = facade.optimize_model
     seen_train = []
 
-    def inspect_train(spec, X_train, y_train, metric, config):
+    def inspect_train(spec, X_train, y_train, metric, config, **options):
         expected = churn_df.loc[X_train.index, "target"].eq("churn").astype(int)
         np.testing.assert_array_equal(y_train, expected)
         seen_train.append(set(X_train.index))
-        return optimizer(spec, X_train, y_train, metric, config)
+        return optimizer(spec, X_train, y_train, metric, config, **options)
 
     monkeypatch.setattr(facade, "optimize_model", inspect_train)
     result = fit_binary(churn_df, models=model, positive_class="churn")
