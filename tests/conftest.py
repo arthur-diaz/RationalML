@@ -1,7 +1,7 @@
 import numpy as np
 import pandas as pd
 import pytest
-from sklearn.datasets import make_classification
+from sklearn.datasets import make_classification, make_regression
 
 
 @pytest.fixture
@@ -10,6 +10,25 @@ def binary_df():
         n_samples=100, n_features=6, n_informative=4,
         n_redundant=0, random_state=11,
     )
+    df = pd.DataFrame(X, columns=[f"feature_{i}" for i in range(X.shape[1])])
+    df["target"] = y
+    return df
+
+
+@pytest.fixture
+def multiclass_df():
+    X, y = make_classification(
+        n_samples=150, n_features=6, n_informative=5, n_redundant=0,
+        n_classes=3, n_clusters_per_class=1, random_state=23,
+    )
+    df = pd.DataFrame(X, columns=[f"feature_{i}" for i in range(X.shape[1])])
+    df["target"] = np.array(["silver", "bronze", "gold"])[y]
+    return df
+
+
+@pytest.fixture
+def regression_df():
+    X, y = make_regression(n_samples=120, n_features=6, noise=4, random_state=29)
     df = pd.DataFrame(X, columns=[f"feature_{i}" for i in range(X.shape[1])])
     df["target"] = y
     return df

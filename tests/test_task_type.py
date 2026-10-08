@@ -21,12 +21,15 @@ def test_auto_detects_exactly_two_classes(labels):
 
 @pytest.mark.parametrize("labels", [[0, 0], [0, 1, 2], [0.1, 0.2, 0.3]])
 def test_auto_rejects_ambiguous_targets(labels):
-    with pytest.raises(UnsupportedTaskError, match="exactly two"):
+    with pytest.raises(UnsupportedTaskError, match="exactly two|ambiguous"):
         resolve_task("auto", pd.Series(labels))
 
 
 @pytest.mark.parametrize("task", [TaskType.MULTICLASS, "regression", "unknown", "auto?"])
-def test_unimplemented_and_unknown_tasks(task):
+def test_explicit_and_unknown_tasks(task):
+    if task == "regression":
+        assert resolve_task(task, pd.Series([0, 1])) is TaskType.REGRESSION
+        return
     with pytest.raises(UnsupportedTaskError):
         resolve_task(task, pd.Series([0, 1]))
 

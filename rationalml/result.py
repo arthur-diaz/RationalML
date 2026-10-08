@@ -9,8 +9,8 @@ from numpy.typing import NDArray
 from sklearn.pipeline import Pipeline
 
 from .config import AutoMLConfig
-from .data import BinaryLabelEncoder, validate_features
-from .exceptions import DataValidationError
+from .data import BinaryLabelEncoder, MulticlassLabelEncoder, validate_features
+from .exceptions import DataValidationError, UnsupportedTaskError
 from .preprocessing.schema import FeatureSchema
 from .tasks import TaskType
 
@@ -29,7 +29,7 @@ class AutoMLResult:
     feature_importance: pd.DataFrame
     config: AutoMLConfig
     feature_names: tuple[str, ...]
-    label_encoder: BinaryLabelEncoder
+    label_encoder: BinaryLabelEncoder | MulticlassLabelEncoder | None
     train_indices: tuple[int, ...]
     test_indices: tuple[int, ...]
     feature_schema: FeatureSchema | None = None
@@ -38,17 +38,30 @@ class AutoMLResult:
     @property
     def positive_class(self) -> object:
         """Original target label encoded as internal class 1."""
+        self._require_binary()
         return self.label_encoder.positive_class
 
     @property
     def negative_class(self) -> object:
         """Original target label encoded as internal class 0."""
+        self._require_binary()
         return self.label_encoder.negative_class
 
     @property
     def classes_(self) -> NDArray[Any]:
-        """Original labels in probability column order: [negative, positive]."""
+        """Original classification labels, ordered exactly as probability columns."""
+        if self.task is TaskType.REGRESSION:
+            raise UnsupportedTaskError("classes_ is only available for classification tasks.")
         return self.label_encoder.classes_.copy()
+
+    @property
+    def primary_metric(self) -> str:
+        """Effective metric used for CV selection, after resolving metric='auto'."""
+        return self.config.metric
+
+    def _require_binary(self) -> None:
+        if self.task is not TaskType.BINARY:
+            raise UnsupportedTaskError("positive_class, negative_class and predict_positive_proba are only available for binary classification.")
 
     def _features(self, X: pd.DataFrame | NDArray[Any]) -> pd.DataFrame:
         if isinstance(X, pd.DataFrame):
@@ -74,16 +87,19 @@ class AutoMLResult:
         return features
 
     def predict(self, X: pd.DataFrame | NDArray[Any]) -> NDArray[Any]:
-        """Predict original target labels, reversing the internal binary encoding."""
+        """Predict original classification labels or numeric regression values."""
         encoded = np.asarray(self.best_model.predict(self._features(X)))
-        return self.label_encoder.inverse_transform(encoded)
+        return encoded if self.task is TaskType.REGRESSION else self.label_encoder.inverse_transform(encoded)
 
     def predict_proba(self, X: pd.DataFrame | NDArray[Any]) -> NDArray[np.float64]:
-        """Return [P(negative_class), P(positive_class)] for each row."""
+        """Return P(y=classes_[j]) in column j; binary order is [negative, positive]."""
+        if self.task is TaskType.REGRESSION:
+            raise UnsupportedTaskError("predict_proba is only available for classification tasks.")
         if not callable(getattr(self.best_model, "predict_proba", None)):
             raise TypeError(f"Model {self.best_model_name!r} does not support predict_proba.")
         return np.asarray(self.best_model.predict_proba(self._features(X)), dtype=float)
 
     def predict_positive_proba(self, X: pd.DataFrame | NDArray[Any]) -> NDArray[np.float64]:
         """Return a 1D vector of P(y = positive_class)."""
+        self._require_binary()
         return self.predict_proba(X)[:, 1]

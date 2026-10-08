@@ -6,6 +6,7 @@ from typing import Any
 
 from .models import ModelRegistry
 from .optimization.spaces import suggest_lightgbm, suggest_logistic_regression, suggest_xgboost
+from .tasks import TaskType
 
 _ALGORITHMS = {
     "xgb_gb": ("xgboost", suggest_xgboost, {}),
@@ -39,7 +40,7 @@ def legacy_model_registry(context: Any) -> type[ModelRegistry]:
             # containing n_estimators parallel trees.
             params.update(n_estimators=1, num_parallel_tree=context.n_estimators)
         LegacyRegistry.register(replace(
-            spec, name=name, default_params=params,
+            spec, name=name, default_params=params, tasks=frozenset({TaskType.BINARY}),
             search_space=partial(space, bounds=context.h_param[name]),
         ))
     return LegacyRegistry

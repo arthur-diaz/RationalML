@@ -15,7 +15,7 @@ def test_logistic_model_metadata_and_parameters():
     estimator = spec.estimator_class(**spec.parameters({"C": 2.0}, 19, 2))
     assert estimator.random_state == 19
     assert estimator.C == 2.0
-    assert ModelRegistry.available(TaskType.REGRESSION) == []
+    assert "ridge" in ModelRegistry.available(TaskType.REGRESSION)
 
 
 @pytest.mark.parametrize("name, module", [("lightgbm", "lightgbm"), ("xgboost", "xgboost")])

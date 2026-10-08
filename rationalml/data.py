@@ -1,4 +1,4 @@
-"""Input validation and explicit binary labels, without mutating user data."""
+"""Input validation and train-fitted classification labels, without mutation."""
 
 from dataclasses import dataclass
 from typing import Any
@@ -9,6 +9,7 @@ import pandas as pd
 from numpy.typing import NDArray
 from pandas.api.types import is_bool_dtype, is_float_dtype, is_integer_dtype
 from sklearn.base import BaseEstimator
+from sklearn.preprocessing import LabelEncoder
 
 from .exceptions import DataValidationError
 from .preprocessing.config import PreprocessingConfig
@@ -72,6 +73,37 @@ class BinaryLabelEncoder:
         if encoded.ndim != 1 or not np.isin(encoded, [0, 1]).all():
             raise DataValidationError("Binary predictions must be a one-dimensional 0/1 vector.")
         return self.classes_[encoded.astype(np.int64)]
+
+
+class MulticlassLabelEncoder:
+    """Encode multiclass labels using a LabelEncoder fitted on train only."""
+
+    def __init__(self, encoder: LabelEncoder) -> None:
+        self._encoder = encoder
+
+    @classmethod
+    def from_target(cls, y: pd.Series) -> "MulticlassLabelEncoder":
+        if y.isna().any() or y.nunique() < 3:
+            raise DataValidationError("Multiclass encoding requires at least three non-missing target classes.")
+        try:
+            return cls(LabelEncoder().fit(y))
+        except (TypeError, ValueError) as error:
+            raise DataValidationError("Multiclass labels must be uniformly numeric or strings.") from error
+
+    @property
+    def classes_(self) -> NDArray[Any]:
+        return self._encoder.classes_.copy()
+
+    def transform(self, y: pd.Series) -> NDArray[np.int64]:
+        if not y.isin(self.classes_).all():
+            raise DataValidationError("The target contains labels outside the fitted multiclass classes.")
+        return self._encoder.transform(y)
+
+    def inverse_transform(self, y: NDArray[Any]) -> NDArray[Any]:
+        try:
+            return self._encoder.inverse_transform(y)
+        except (ValueError, TypeError) as error:
+            raise DataValidationError("Multiclass predictions must contain fitted internal class indices.") from error
 
 
 def validate_features(

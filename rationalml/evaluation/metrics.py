@@ -35,23 +35,33 @@ class MetricSpec:
             raise ValueError(f"Metric {self.name!r} returned a non-finite value.")
         return value
 
-    def evaluate(self, estimator: Any, X: pd.DataFrame, y: pd.Series) -> float:
-        predictions = (
-            estimator.predict_proba(X)[:, 1]
-            if self.prediction_type == "proba"
-            else estimator.predict(X)
-        )
+    def evaluate(
+        self, estimator: Any, X: pd.DataFrame, y: pd.Series, task: TaskType = TaskType.BINARY,
+    ) -> float:
+        predictions = getattr(estimator, "predict_proba" if self.prediction_type == "proba" else "predict")(X)
+        if self.prediction_type == "proba" and task is TaskType.BINARY:
+            predictions = predictions[:, 1]
         return self.score(y, predictions)
 
 
-def evaluate_binary(estimator: Any, X: pd.DataFrame, y: pd.Series) -> dict[str, float]:
-    """Compute all binary metrics using one prediction call of each type."""
+def evaluate_metrics(
+    estimator: Any, X: pd.DataFrame, y: pd.Series, task: TaskType,
+) -> dict[str, float]:
+    """Compute task metrics, calling predict/proba at most once each."""
     from .registry import MetricRegistry
 
-    predictions = estimator.predict(X)
-    probabilities = estimator.predict_proba(X)[:, 1]
+    specs = [MetricRegistry.get(name) for name in MetricRegistry.available(task)]
+    predictions = {}
+    for prediction_type in ("predict", "proba"):
+        if not any(spec.prediction_type == prediction_type for spec in specs):
+            continue
+        values = getattr(estimator, "predict_proba" if prediction_type == "proba" else "predict")(X)
+        predictions[prediction_type] = values[:, 1] if prediction_type == "proba" and task is TaskType.BINARY else values
     return {
-        name: spec.score(y, probabilities if spec.prediction_type == "proba" else predictions)
-        for name in MetricRegistry.available(TaskType.BINARY)
-        for spec in [MetricRegistry.get(name)]
+        spec.name: spec.score(y, predictions[spec.prediction_type]) for spec in specs
     }
+
+
+def evaluate_binary(estimator: Any, X: pd.DataFrame, y: pd.Series) -> dict[str, float]:
+    """Retain the binary evaluation entry point and positive-class contract."""
+    return evaluate_metrics(estimator, X, y, TaskType.BINARY)

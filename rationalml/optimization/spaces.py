@@ -80,3 +80,8 @@ def suggest_logistic_regression(trial: Trial, bounds: dict[str, Any] | None = No
         "tol": trial.suggest_float("tol", *p["tol"], log=True),
         "max_iter": trial.suggest_int("max_iter", *p["max_iter"]),
     }
+
+
+def suggest_ridge(trial: Trial) -> dict[str, Any]:
+    """A single regularization parameter on a logarithmic scale."""
+    return {"alpha": trial.suggest_float("alpha", 1e-4, 1e4, log=True)}

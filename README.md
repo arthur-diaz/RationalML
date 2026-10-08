@@ -1,6 +1,7 @@
-# RationalML — V0.2.1
+# RationalML — V0.3.0
 
-RationalML compare et optimise des modèles de classification binaire sur les
+RationalML compare et optimise des modèles de classification binaire,
+multiclass et de régression sur les
 variables choisies par le Data Scientist. **RationalML n'est pas un outil de
 feature engineering automatique. Il suppose par défaut que le Data Scientist
 fournit un DataFrame prêt pour la modélisation.**
@@ -31,7 +32,8 @@ Le cœur requiert numpy, pandas, scikit-learn, Optuna et threadpoolctl. LightGBM
 et XGBoost sont optionnels via l'extra `boosting`. `models="auto"` sélectionne
 les modèles enregistrés dont les dépendances sont installées ; une dépendance
 explicitement demandée mais absente produit `MissingDependencyError`.
-L'extra `legacy` fournit tqdm pour `local_optimizer`.
+L'extra `legacy` fournit tqdm pour `local_optimizer`. Les modèles sont filtrés
+par tâche : les régresseurs ne sont jamais proposés à une classification.
 
 ```python
 from rationalml import AutoML
@@ -49,6 +51,50 @@ predictions = result.predict(new_df_model)
 probabilities = result.predict_proba(new_df_model)
 p_churn = result.predict_positive_proba(new_df_model)
 ```
+
+Les autres tâches utilisent également un DataFrame préparé, sans preprocessing
+par défaut :
+
+```python
+multiclass_result = AutoML(
+    target="segment", task="multiclass",
+).fit(df_multiclass)
+segments = multiclass_result.predict(new_df_multiclass)
+segment_probabilities = multiclass_result.predict_proba(new_df_multiclass)
+# Colonne j = P(segment == multiclass_result.classes_[j]).
+
+regression_result = AutoML(
+    target="revenue", task="regression",
+).fit(df_regression)
+revenues = regression_result.predict(new_df_regression)
+```
+
+| Tâche | `metric="auto"` (défaut) | CV |
+| --- | --- | --- |
+| `binary` | `roc_auc` | `StratifiedKFold` |
+| `multiclass` | `f1_macro` | `StratifiedKFold` |
+| `regression` | `rmse` | `KFold` |
+
+Les deux splitters utilisent `shuffle=True` et `random_state`. Le split
+train/test est stratifié seulement pour la classification.
+Avec `task="auto"`, exactement deux valeurs donnent binary ; plus de deux
+labels non numériques donnent multiclass. **Numeric targets with more than
+two values require an explicit task.** L'ambiguïté produit
+`UnsupportedTaskError`, sans heuristique de cardinalité. Une cible à une seule
+classe exige notamment `task="regression"` si c'est une mesure constante.
+
+| Tâche | Modèles | Métriques disponibles |
+| --- | --- | --- |
+| binary | `logistic_regression`, `lightgbm`, `xgboost` | roc_auc, average_precision, accuracy, balanced_accuracy, precision, recall, f1, log_loss |
+| multiclass | `logistic_regression`, `lightgbm`, `xgboost` | accuracy, balanced_accuracy, f1_macro, f1_weighted, log_loss |
+| regression | `ridge`, `lightgbm_regressor`, `xgboost_regressor` | rmse, mae, r2 |
+
+LightGBM/XGBoost restent optionnels. `log_loss`, `rmse` et `mae` sont minimisées ;
+les autres métriques sont maximisées. RMSE utilise
+[`root_mean_squared_error`](https://scikit-learn.org/1.5/modules/generated/sklearn.metrics.root_mean_squared_error.html),
+disponible dans les versions sklearn supportées. Une métrique incompatible
+échoue avant Optuna. `result.primary_metric` et `result.config.metric` exposent
+le nom effectif ; `result.config.task` expose la tâche résolue.
 
 Avec `None`, les features doivent être numériques ou booléennes, sans NaN
 ni infini. RationalML n'impute, n'encode, ne scale et ne supprime aucune
@@ -81,7 +127,7 @@ basic_result.predict_positive_proba(new_df_raw)
 | Datetime, datetime avec timezone, timedelta | `DataValidationError` explicite |
 
 En mode basic, `ModelSpec.requires_scaling=True` active `StandardScaler` pour
-LogisticRegression ; LightGBM/XGBoost déclarent False et ne sont pas scalés.
+LogisticRegression et Ridge ; LightGBM/XGBoost déclarent False et ne sont pas scalés.
 Ce champ n'a aucun effet avec `None` ou un transformer utilisateur.
 
 `FeatureSchema` est inféré uniquement sur les lignes d'entraînement du fold,
@@ -167,9 +213,13 @@ statistiques, fournir leur transformer dans `preprocessing`.
 ## Validation et inférence
 
 `fit` exige un DataFrame avec des noms de colonnes uniques, non vides et de
-type chaîne, et une cible sans valeur manquante à exactement deux classes.
-Chaque classe doit conserver au moins `cv` observations dans le train ; les
-deux classes doivent être présentes dans le test.
+type chaîne, et une cible sans valeur manquante. Binary exige exactement deux
+classes, multiclass au moins trois, et regression une cible numérique finie.
+Chaque classe doit conserver au moins `cv` observations dans le train ; toutes
+les classes doivent être présentes dans le test. Les catégories pandas non
+observées de la cible ne comptent pas comme classes. En régression, au moins
+deux lignes par fold validation et dans le test sont exigées pour que R2 soit
+défini. Aucune cible n'est imputée.
 
 Dans les trois modes, un DataFrame d'inférence doit contenir exactement les
 mêmes noms de features, chacun une fois. Leur ordre peut changer : RationalML
@@ -189,7 +239,7 @@ Une matrice numpy de même largeur est reconstruite avec les noms dans l'ordre
 d'origine. Le mode basic exige un DataFrame si des catégories sont présentes.
 Le DataFrame reste recommandé pour le mode expert et ses sélections par nom.
 
-## Classe positive et résultats
+## Targets et résultats
 
 Le contrat V0.1.1 reste inchangé. `positive_class` explicite est vérifiée
 parmi les deux labels puis encodée en 1 ; l'autre classe devient 0.
@@ -207,23 +257,40 @@ P(positive_class) en colonne 1 ; `predict_positive_proba` retourne ce dernier
 vecteur 1D. Precision, recall, f1, roc_auc et average_precision utilisent la
 classe interne 1, y compris si le label original positif est 0 ou False.
 
-- `task`, `target`, `config` : tâche binaire, cible et copie validée des options.
+En multiclass, un `MulticlassLabelEncoder` léger encapsule sklearn LabelEncoder,
+ajusté uniquement sur le train. Il encode les labels en 0…n_classes-1 dans
+l'ordre déterministe de `classes_`, rejette les labels inconnus et restaure
+les labels originaux dans `predict`. `predict_proba` renvoie la matrice complète,
+colonne j correspondant à `classes_[j]`, également utilisée par log_loss.
+
+En régression, aucun encodeur : y conserve son dtype numérique et `predict`
+renvoie les valeurs numériques. `classes_` et `predict_proba` lèvent
+`UnsupportedTaskError`. `positive_class`, `negative_class` et
+`predict_positive_proba` lèvent cette erreur hors binary. Renseigner
+`positive_class` hors binary produit `ConfigurationError` après résolution
+de la tâche.
+
+- `task`, `target`, `config`, `primary_metric` : tâche résolue, cible, copie
+  validée des options et métrique effective.
 - `leaderboard` : rank, cv_score et cv_std, triés selon la direction de la métrique.
 - `cv_results` : modèle, essai, score moyen et scores des folds Optuna.
 - `best_model_name`, `best_params` : gagnant CV et paramètres de son estimateur.
 - `best_model` : **`sklearn.pipeline.Pipeline`**. Avec None : étape `estimator`
   seule. Avec basic ou transformer : `preprocessing`, puis `estimator`.
   Les attributs natifs sont dans `best_model.named_steps["estimator"]` ;
-  ses labels restent les 0/1 internes. Utiliser `AutoMLResult` pour les labels
+  ses labels de classification restent internes. Utiliser `AutoMLResult` pour les labels
   originaux et les contrôles de colonnes.
-- `metrics`, `test_metrics` : les huit métriques binaires du seul gagnant,
+- `metrics`, `test_metrics` : toutes les métriques de la tâche du seul gagnant,
   calculées lors d'une évaluation unique sur le test.
 - `feature_names` : noms bruts dans l'ordre d'entraînement.
 - `feature_schema` : schéma du train final en mode basic ; None ailleurs.
 - `transformed_feature_names` : noms fournis au modèle, ou None si indisponibles.
 - `feature_importance` : DataFrame brut, colonnes `feature`, `importance`
-  numérique et `source_feature`. Coefficients logistiques signés et importances
-  natives des arbres, triés par valeur absolue. Aucun Styler.
+  numérique et `source_feature` en binary/régression. Coefficients logistiques
+  et Ridge signés, importances natives des arbres, triés par valeur absolue.
+  LogisticRegression multiclass ajoute `class` : une ligne par classe et feature,
+  sans moyenne ni perte de lignes de coef_. Les arbres multiclass conservent
+  leur importance native globale par feature. Aucun Styler.
 - `train_indices`, `test_indices` : positions des lignes, même avec index dupliqué.
 
 Avec None, les noms et source_feature sont ceux d'origine. Avec basic,
@@ -264,29 +331,33 @@ les threads des modèles et le calcul numérique. `n_trials` et `timeout`
 s'appliquent par modèle ; un timeout réel peut modifier le nombre d'essais
 terminés malgré un seed identique. `verbose` pilote le logger RationalML.
 
-Les six responsabilités techniques restent dans les composants existants :
-configuration, validation, construction du pipeline, optimisation, inférence,
-extraction des importances. Aucune nouvelle classe de production ni nouveau
-moteur n'est ajouté. Le chemin par défaut passe de six opérations à trois :
-
-| Opération du chemin par défaut | V0.2.0 auto | V0.2.1 None |
-| --- | --- | --- |
-| Valider les entrées | Oui | Oui |
-| Inférer les types et diagnostiquer les colonnes | Oui | Non |
-| Construire/ajuster le preprocessing automatique | Oui | Non |
-| Entraîner les modèles par CV puis le gagnant | Oui | Oui |
-| Valider les colonnes et prédire | Oui | Oui |
-| Récupérer les noms transformés et le mapping OneHot | Oui | Non, noms d'origine |
-
-`preprocessing/config.py` conserve les options basic ; `schema.py` le schéma
-basic et les contrôles de colonnes ; `builder.py` les trois branches du
-pipeline et les noms. Les fonctions V0.2 restantes sont utiles au mode basic
-ou au cycle d'entraînement. L'étape passthrough du mode None est supprimée.
+Les composants existants conservent leurs responsabilités. V0.3 ajoute
+seulement un encodeur multiclass, des entrées de registries et des branches
+explicites pour le split/CV et l'inférence. `ModelSpec.task_params` déclare les
+objectifs multiclass des arbres ; AutoML ne connaît pas les noms des modèles.
+Le sous-package `preprocessing` est inchangé par rapport à V0.2.1, sans
+transformation supplémentaire.
 
 Un modèle s'ajoute via `ModelRegistry.register(ModelSpec(...))`, une métrique
 via `MetricRegistry.register(MetricSpec(...))`. Le modèle doit accepter
-random_state, déclarer `n_jobs_parameter` (ou None), supporter predict_proba
-et définir `requires_scaling` pour basic. AutoML reste inchangé.
+random_state, déclarer `n_jobs_parameter` (ou None), supporter predict_proba en classification
+et définir `requires_scaling` pour basic. Aucune modification du moteur n'est
+nécessaire pour l'enregistrer.
+
+## Migration V0.2.1 → V0.3.0
+
+- `metric` passe de `"roc_auc"` à `"auto"` ; le comportement binaire effectif
+  reste roc_auc. Les configurations retournées exposent les noms résolus.
+- Les labels textuels à plus de deux classes peuvent désormais résoudre
+  multiclass ; les cibles numériques à plus de deux valeurs restent une
+  erreur avec auto et nécessitent un choix explicite.
+- `positive_class` et les méthodes binaires ne s'étendent pas aux nouvelles
+  tâches ; aucune classe positive multiclass n'est inventée.
+- `ModelRegistry.available()` / `MetricRegistry.available()` sans filtre
+  incluent les nouvelles entrées : passer une tâche pour filtrer.
+- L'importance logistique multiclass est un format long avec colonne `class`.
+  Les formats binaires, les trois modes preprocessing et les erreurs legacy
+  restent conservés.
 
 ## Migration V0.2.0 → V0.2.1
 
@@ -305,7 +376,7 @@ et définir `requires_scaling` pour basic. AutoML reste inchangé.
 ## Compatibilité legacy
 
 Le package s'importe avec `from rationalml import AutoML`. Les six modules
-historiques restent séparés du cœur. `local_optimizer` → `sco_mod` et
+historiques restent binaires et séparés du cœur. `local_optimizer` → `sco_mod` et
 `second_step` utilisent des DataFrames numériques/booléens sans preprocessing
 automatique. Leurs résultats sont des DataFrames bruts ; les AutoMLResult
 sont disponibles dans `init_model.results_` / `result_`.
@@ -324,29 +395,26 @@ incorrects et leur contrat métier ambigu. `roc_auc` et `average_precision`
 
 ## Vérification et limites
 
-Vérification V0.2.1 : **231 tests réussis en 12,75 s**, **1 warning attendu**
-(classe positive implicite sur labels chaînes), **0 échec et 0 skip**.
-Les 204 cas V0.2.0 sont conservés et 27 cas complètent le nouveau contrat.
-`pip check` retourne `No broken requirements found.` et l'installation
-éditable expose `RationalML==0.2.1`. Les trois exemples README sont exécutés
-avec des DataFrames représentatifs et un budget réduit à un essai / trois folds.
+Vérification V0.3.0 : **330 tests réussis en 20,69 s**, **99 nouveaux cas**,
+**1 warning attendu** (classe positive implicite sur labels chaînes),
+**0 échec et 0 skip**. LightGBM et XGBoost sont installés et leurs tests exécutés.
+`pip check` retourne `No broken requirements found.` ; les versions API et
+installation éditable sont `RationalML==0.3.0`.
 
-Les tests V0.1.x et V0.2 sont conservés, avec attentes adaptées au nouveau
-défaut. Les jeux mixtes et les tests de fuite V0.2 demandent explicitement basic.
-Les nouveaux fichiers `test_preprocessing_modes.py` et
-`test_custom_preprocessing.py` couvrent le défaut sans transformation, les
-erreurs de préparation, le clonage par fold, l'absence de holdout dans fit,
-les transformers sklearn et personnalisés, les noms indisponibles, la
-sérialisation, la reproductibilité et l'absence de mutation.
-
-Les tests de fuite basic tracent les médianes, catégories et scaling propres
-à chaque fold. Les tests expert enregistrent les instances et les indices
-vus par fit/transform, et vérifient le fit final uniquement sur le train.
+Les 231 cas V0.2.1 sont conservés, avec les attentes « tâche non implémentée »
+adaptées. Les nouveaux tests couvrent les six modèles, les trois modes de
+preprocessing, les métriques, les labels originaux, les probabilités,
+les coefficients par classe, la sérialisation et la reproductibilité.
+Les tests de fuite des trois tâches tracent les instances, les indices vus
+par fit/transform et les médianes propres à chaque fold. Ils vérifient le
+fit final sur le train seulement et la stabilité de la sélection lorsque
+seules les features du holdout changent.
 
 La mémoire du OneHot dense basic et la matrice CI des versions minimales
 restent à surveiller. Les colonnes entièrement manquantes dans un fold basic
 restent une erreur ; les constantes basic peuvent avertir par fold/essai.
 Aucune dépendance n'est ajoutée et aucun feature engineering automatique
-n'est introduit. Multiclass, régression, datetime automatique, sélection de
+n'est introduit. Datetime automatique, sélection de
 features, outliers, logs, target encoding, encodage haute cardinalité, SHAP,
-MLflow et Excel restent hors V0.2.1. Aucune fonctionnalité V0.3 n'est ajoutée.
+MLflow, Excel, ranking/déciles, optimisation de seuil, calibration, CatBoost
+et group/time split restent hors V0.3. Aucune fonctionnalité V0.4 n'est ajoutée.
