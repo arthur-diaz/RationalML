@@ -1,6 +1,7 @@
 """Raw Python results and prediction using the fitted winning pipeline."""
 
 from dataclasses import dataclass, field
+from pathlib import Path
 from typing import Any
 
 import numpy as np
@@ -13,6 +14,7 @@ from .data import BinaryLabelEncoder, MulticlassLabelEncoder, validate_features
 from .exceptions import ConfigurationError, DataValidationError, UnsupportedTaskError
 from .evaluation.ranking import binary_ranking_table, regression_ranking_table, top_segment
 from .preprocessing.schema import FeatureSchema
+from .reporting.config import ExcelReportConfig
 from .tasks import TaskType
 
 
@@ -74,6 +76,15 @@ class AutoMLResult:
         """Select the highest stored holdout scores/predictions without model calls."""
         score_column, _ = self._ranking_target(class_label)
         return top_segment(self._test_predictions, fraction=fraction, score_column=score_column)
+
+    def to_excel(
+        self, path: str | Path, *, config: ExcelReportConfig | None = None,
+        class_label: object | None = None,
+    ) -> Path:
+        """Export stored results to .xlsx; overwrite files, require an existing parent."""
+        from .reporting.excel import export_excel
+
+        return export_excel(self, path, config=config, class_label=class_label)
 
     @property
     def positive_class(self) -> object:

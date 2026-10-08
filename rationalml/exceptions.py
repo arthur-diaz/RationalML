@@ -18,7 +18,7 @@ class UnsupportedTaskError(AutoMLError, ValueError):
 
 
 class MissingDependencyError(AutoMLError, ImportError):
-    """An explicitly requested model dependency is missing."""
+    """An explicitly requested optional dependency is missing."""
 
 
 class OptimizationError(AutoMLError, RuntimeError):

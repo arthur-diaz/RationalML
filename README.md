@@ -1,4 +1,4 @@
-# RationalML — V0.5.0
+# RationalML — V0.6.0
 
 RationalML compare et optimise des modèles de classification binaire,
 multiclass et de régression sur les
@@ -23,7 +23,7 @@ Python 3.10 ou plus, depuis ce dossier :
 
 ```powershell
 python -m venv .venv
-.\.venv\Scripts\python.exe -m pip install -e ".[boosting,legacy,test]"
+.\.venv\Scripts\python.exe -m pip install -e ".[boosting,legacy,test,excel]"
 .\.venv\Scripts\python.exe -m pytest -q -p no:cacheprovider
 .\.venv\Scripts\python.exe -m pip check
 ```
@@ -388,6 +388,57 @@ Regression retourne `segment`, `count`, `pred_min`, `pred_max`, `pred_mean`,
 donc l'opposé du résidu moyen. Tous les tableaux contiennent des valeurs brutes,
 sans Styler, formatage ou seuil interprétatif.
 
+## Excel export
+
+L'extra Excel est optionnel ; le cœur s'importe et fonctionne sans openpyxl :
+
+```shell
+pip install "rationalml[excel]"
+# Depuis ce dépôt : python -m pip install -e ".[excel]"
+```
+
+```python
+result.to_excel("model_report.xlsx")  # retourne un pathlib.Path
+
+from rationalml import ExcelReportConfig
+
+config = ExcelReportConfig(include_predictions=True, top_fraction=0.10)
+result.to_excel("model_report.xlsx", config=config)
+
+# Multiclass : classe métier choisie explicitement.
+multiclass_result.to_excel("segment_report.xlsx", class_label="gold")
+```
+
+Les feuilles communes sont **Summary**, **Leaderboard**, **Metrics**,
+**Feature Importance**, **Hyperparameters**. Binary et regression ajoutent
+**Ranking** et **Top Segment**. En multiclass, ces deux feuilles sont présentes
+uniquement si `class_label` est fourni ; sans classe, le reste du rapport est
+exporté normalement. **Predictions** est créée seulement avec
+`include_predictions=True` (False par défaut), à partir du holdout stocké.
+Top Segment et Predictions conservent l'index dans leur première colonne,
+sans exporter les features d'origine. Les index composites sont représentés
+en JSON et les dates avec fuseau en ISO, pour conserver leurs identifiants.
+
+`ExcelReportConfig` est une dataclass frozen : `decimal_places=3`,
+`percentage_places=2` (entiers entre 0 et 15), `include_predictions=False`,
+`top_fraction=0.10` avec `0 < top_fraction <= 1`. Les nombres restent numériques :
+formats `0.000` pour les décimales, `0.00%` pour les taux/captures, `0.00` pour
+les lifts et `0` pour les entiers. La locale est gérée par Excel. Le style
+reste sobre : en-têtes gras, filtres, première ligne figée et largeurs bornées.
+
+L'export lit uniquement AutoMLResult et appelle ses méthodes ranking/top
+existantes ; aucun fit, predict, predict_proba, recalcul des métriques ou
+appel Optuna. Une importance indisponible n'empêche pas l'export.
+Openpyxl est importé à la demande ; s'il manque, `MissingDependencyError`
+indique la commande d'installation. L'extra requiert `openpyxl>=3.0.10,<4` ;
+l'écriture directe ne dépend pas des exigences du writer Excel de pandas.
+
+Le chemin doit avoir l'extension `.xlsx` et un parent existant. Les dossiers
+ne sont pas créés et un fichier existant est écrasé. Les limites de
+1 048 576 lignes **en-tête compris** et 16 384 colonnes sont vérifiées avant
+sauvegarde : aucune troncature silencieuse. Les textes trop longs ou les
+nombres infinis provoquent aussi une erreur explicite.
+
 ## Protocole et responsabilités
 
 ```text
@@ -428,6 +479,12 @@ via `MetricRegistry.register(MetricSpec(...))`. Le modèle doit accepter
 random_state, déclarer `n_jobs_parameter` (ou None), supporter predict_proba en classification
 et définir `requires_scaling` pour basic. Aucune modification du moteur n'est
 nécessaire pour l'enregistrer.
+
+## Migration V0.5.0 → V0.6.0
+
+Aucun contrat ML existant ne change. `to_excel` et `ExcelReportConfig` sont
+ajoutés ; installer l'extra `excel` uniquement pour exporter. Les helpers Excel
+legacy restent désactivés : utiliser `AutoMLResult.to_excel`.
 
 ## Migration V0.4.0 → V0.5.0
 
@@ -497,13 +554,20 @@ incorrects et leur contrat métier ambigu. `roc_auc` et `average_precision`
 
 ## Vérification et limites
 
-Vérification V0.5.0 : **473 tests réussis en 37,88 s**, dont **113 nouveaux cas**,
+Vérification V0.6.0 : **585 tests réussis en 53,21 s**, dont **112 nouveaux cas**,
 **1 warning attendu** (classe positive implicite sur labels chaînes),
 **0 échec et 0 skip**. LightGBM et XGBoost sont installés et testés.
-`pip check` retourne `No broken requirements found.` ; les versions API et
-installation éditable sont `RationalML==0.5.0`.
+`pip check` retourne `No broken requirements found.` sans puis avec l'extra
+Excel ; les versions API et installation éditable sont `RationalML==0.6.0`.
+Openpyxl **3.0.10**, version minimale déclarée, est testé par écriture directe.
 
-Les 360 cas V0.4 sont conservés sans modification. Les tests V0.5 vérifient les
+Les 473 cas V0.5 sont conservés sans modification. Les nouveaux tests relisent
+les classeurs pour les trois tâches : données, types numériques, formats,
+classes explicites, index, prédictions optionnelles, limites et immutabilité.
+Ils bloquent fit/predict/predict_proba, transformations, métriques et Optuna,
+même après suppression du dataset original, dans les trois modes preprocessing.
+L'import sans openpyxl et l'erreur d'installation sont également testés.
+Les tests ranking vérifient les
 calculs contrôlés de capture/lift et d'erreur régression, les scores identiques,
 les effectifs non divisibles, les paramètres invalides, les copies et les index.
 Ils couvrent les six modèles existants et les trois modes preprocessing.
@@ -519,8 +583,9 @@ seules les features du holdout changent.
 La mémoire du OneHot dense basic et la matrice CI des versions minimales
 restent à surveiller. Les colonnes entièrement manquantes dans un fold basic
 restent une erreur ; les constantes basic peuvent avertir par fold/essai.
-Aucune dépendance n'est ajoutée et aucun feature engineering automatique
+Openpyxl est ajouté uniquement à l'extra `excel`, sans dépendance obligatoire
+supplémentaire ni feature engineering automatique
 n'est introduit. Datetime automatique, sélection de
 features, outliers, logs, target encoding, encodage haute cardinalité, SHAP,
-MLflow, Excel, optimisation de seuil, calibration, CatBoost
-et group/time split restent hors V0.5. Aucune fonctionnalité V0.6 n'est ajoutée.
+MLflow, optimisation de seuil, calibration, CatBoost
+et group/time split restent hors V0.6. Aucune fonctionnalité V0.7 n'est ajoutée.
