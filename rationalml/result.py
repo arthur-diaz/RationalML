@@ -32,6 +32,10 @@ class AutoMLResult:
     label_encoder: BinaryLabelEncoder | MulticlassLabelEncoder | None
     train_indices: tuple[int, ...]
     test_indices: tuple[int, ...]
+    baseline_name: str
+    baseline_score: float
+    baseline_cv_std: float
+    baseline_fold_scores: tuple[float, ...]
     feature_schema: FeatureSchema | None = None
     transformed_feature_names: tuple[str, ...] | None = None
 

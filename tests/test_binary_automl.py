@@ -70,9 +70,9 @@ def test_holdout_never_reaches_optimization_fit_or_cv_and_is_evaluated_once(bina
 
     optimize = facade.optimize_model
 
-    def record_optimizer(spec, X_train, y_train, metric, config):
+    def record_optimizer(spec, X_train, y_train, metric, config, **options):
         optimizer_inputs.append((set(X_train.index), set(y_train.index)))
-        return optimize(spec, X_train, y_train, metric, config)
+        return optimize(spec, X_train, y_train, metric, config, **options)
 
     monkeypatch.setattr(facade, "optimize_model", record_optimizer)
     result = small_automl(models=["recording"], model_registry=RecordingRegistry).fit(binary_df)

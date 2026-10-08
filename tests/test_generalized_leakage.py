@@ -68,9 +68,9 @@ def test_new_tasks_fit_only_fold_train_then_full_train(request, monkeypatch, tas
 
     real_optimize = facade.optimize_model
 
-    def record_optimizer(spec, X, y, metric, config):
+    def record_optimizer(spec, X, y, metric, config, **options):
         optimizer_inputs.append((set(X.index), set(y.index)))
-        return real_optimize(spec, X, y, metric, config)
+        return real_optimize(spec, X, y, metric, config, **options)
 
     monkeypatch.setattr(facade, "optimize_model", record_optimizer)
     real_encoding = MulticlassLabelEncoder.from_target
