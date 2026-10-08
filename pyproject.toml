@@ -4,8 +4,8 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "RationalML"
-version = "0.2.1"
-description = "Optuna model comparison for prepared binary data with optional leakage-safe preprocessing"
+version = "0.3.0"
+description = "Optuna model comparison for prepared classification and regression data with optional leakage-safe preprocessing"
 readme = "README.md"
 requires-python = ">=3.10"
 dependencies = [

@@ -15,7 +15,7 @@ from .tasks import TaskType, normalize_task
 class AutoMLConfig:
     target: str
     task: str | TaskType = "auto"
-    metric: str = "roc_auc"
+    metric: str = "auto"
     models: list[str] | str = "auto"
     test_size: float = 0.20
     cv: int = 5

@@ -11,15 +11,15 @@ from sklearn.model_selection import train_test_split
 from threadpoolctl import threadpool_limits
 
 from .config import AutoMLConfig
-from .data import BinaryLabelEncoder, validate_dataframe
-from .evaluation import MetricRegistry, evaluate_binary
+from .data import BinaryLabelEncoder, MulticlassLabelEncoder, validate_dataframe
+from .evaluation import MetricRegistry, evaluate_metrics
 from .exceptions import ConfigurationError, DataValidationError, UnsupportedTaskError
 from .models import ModelRegistry
 from .models.base import feature_importance
 from .optimization.optimizer import optimize_model
 from .preprocessing.builder import build_model_pipeline, transformed_feature_info
 from .result import AutoMLResult
-from .tasks import resolve_task
+from .tasks import TaskType, resolve_task
 
 logger = logging.getLogger(__name__)
 
@@ -45,9 +45,10 @@ class AutoML:
         X = df.drop(columns=[config.target]).copy(deep=True)
         y = df[config.target].copy(deep=True)
         task = resolve_task(config.task, y)
-        metric = MetricRegistry.get(config.metric)
-        if task not in metric.tasks:
-            raise UnsupportedTaskError(f"Metric {metric.name!r} does not support {task.value}.")
+        if task is not TaskType.BINARY and config.positive_class is not None:
+            raise ConfigurationError("positive_class is only available for binary classification.")
+        metric = MetricRegistry.resolve(config.metric, task)
+        config.task, config.metric = task, metric.name
         names = (
             self.model_registry.available(task) if config.models == "auto"
             else [config.models] if isinstance(config.models, str) else config.models
@@ -58,25 +59,39 @@ class AutoML:
         for spec in specs:
             if task not in spec.tasks:
                 raise UnsupportedTaskError(f"Model {spec.name!r} does not support {task.value}.")
-            if not spec.supports_proba:
-                raise ConfigurationError(f"Binary evaluation requires predict_proba: {spec.name!r}.")
+            if task is not TaskType.REGRESSION and not spec.supports_proba:
+                raise ConfigurationError(f"Classification evaluation requires predict_proba: {spec.name!r}.")
         try:
             train_rows, test_rows = train_test_split(
                 np.arange(len(df)), test_size=config.test_size,
-                random_state=config.random_state, stratify=y,
+                random_state=config.random_state, stratify=None if task is TaskType.REGRESSION else y,
             )
         except (TypeError, ValueError) as error:
-            raise DataValidationError(f"Cannot create a stratified train/test split: {error}") from error
+            raise DataValidationError(f"Cannot create the train/test split: {error}") from error
         X_train, X_test = X.iloc[train_rows], X.iloc[test_rows]
         original_train, original_test = y.iloc[train_rows], y.iloc[test_rows]
-        if original_train.value_counts().min() < config.cv or original_test.nunique() != 2:
-            raise DataValidationError(
-                "Each train class must have at least cv rows and both classes must be present in test. "
-                "Provide more examples or adjust cv/test_size."
+        encoder = None
+        if task is TaskType.REGRESSION:
+            if len(original_train) < 2 * config.cv or len(original_test) < 2:
+                raise DataValidationError(
+                    "Regression requires at least two rows per validation fold and in test for finite R2. "
+                    "Provide more examples or adjust cv/test_size."
+                )
+            y_train, y_test = original_train.copy(), original_test.copy()
+        else:
+            counts = original_train.value_counts()
+            if (counts[counts > 0].min() < config.cv
+                    or original_train.nunique() != y.nunique() or original_test.nunique() != y.nunique()):
+                raise DataValidationError(
+                    "Each train class must have at least cv rows and all classes must be present in test. "
+                    "Provide more examples or adjust cv/test_size."
+                )
+            encoder = (
+                BinaryLabelEncoder.from_target(original_train, config.positive_class)
+                if task is TaskType.BINARY else MulticlassLabelEncoder.from_target(original_train)
             )
-        encoder = BinaryLabelEncoder.from_target(original_train, config.positive_class)
-        y_train = pd.Series(encoder.transform(original_train), index=original_train.index)
-        y_test = pd.Series(encoder.transform(original_test), index=original_test.index)
+            y_train = pd.Series(encoder.transform(original_train), index=original_train.index)
+            y_test = pd.Series(encoder.transform(original_test), index=original_test.index)
 
         optimized = []
         for spec in specs:
@@ -93,7 +108,7 @@ class AutoML:
         best_model = build_model_pipeline(best.spec, best.params, X_train, config.preprocessing)
         with threadpool_limits(limits=config.n_jobs if config.n_jobs > 0 else None):
             best_model.fit(X_train, y_train)
-            test_metrics = evaluate_binary(best_model, X_test, y_test)
+            test_metrics = evaluate_metrics(best_model, X_test, y_test, task)
         transformed_names, source_features = transformed_feature_info(best_model, X.columns)
         return AutoMLResult(
             task=task, target=config.target, leaderboard=leaderboard,
@@ -102,6 +117,7 @@ class AutoML:
             cv_results=pd.concat([item.cv_results for item in optimized], ignore_index=True),
             test_metrics=test_metrics, feature_importance=feature_importance(
                 best_model.named_steps["estimator"], transformed_names, source_features,
+                classes=encoder.classes_ if encoder is not None else None,
             ),
             config=config, feature_names=tuple(X.columns), label_encoder=encoder,
             train_indices=tuple(int(row) for row in train_rows),

@@ -11,7 +11,7 @@ def test_binary_metric_metadata():
         "roc_auc", "average_precision", "accuracy", "precision", "recall", "f1",
         "balanced_accuracy", "log_loss",
     }
-    assert MetricRegistry.available(TaskType.REGRESSION) == []
+    assert set(MetricRegistry.available(TaskType.REGRESSION)) == {"rmse", "mae", "r2"}
     assert MetricRegistry.get("log_loss").direction == "minimize"
     assert MetricRegistry.get("roc_auc").prediction_type == "proba"
     assert MetricRegistry.get("accuracy").prediction_type == "predict"

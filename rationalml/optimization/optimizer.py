@@ -7,7 +7,7 @@ import numpy as np
 import optuna
 import pandas as pd
 from optuna.trial import TrialState
-from sklearn.model_selection import StratifiedKFold
+from sklearn.model_selection import KFold, StratifiedKFold
 from threadpoolctl import threadpool_limits
 
 from ..config import AutoMLConfig
@@ -16,6 +16,7 @@ from ..evaluation import MetricSpec
 from ..exceptions import OptimizationError
 from ..models.base import ModelSpec
 from ..preprocessing.builder import build_model_pipeline
+from ..tasks import TaskType, resolve_task
 
 
 @dataclass
@@ -31,20 +32,22 @@ def optimize_model(
     spec: ModelSpec, X_train: pd.DataFrame, y_train: pd.Series,
     metric: MetricSpec, config: AutoMLConfig,
 ) -> OptimizedModel:
-    """Select hyperparameters by stratified CV, with seeded sequential trials."""
+    """Select hyperparameters by task-appropriate CV, with seeded sequential trials."""
     validate_features(X_train, preprocessing=config.preprocessing)
-    folds = list(StratifiedKFold(
+    task = resolve_task(config.task, y_train)
+    splitter = KFold if task is TaskType.REGRESSION else StratifiedKFold
+    folds = list(splitter(
         n_splits=config.cv, shuffle=True, random_state=config.random_state,
     ).split(X_train, y_train))
 
     def objective(trial: optuna.Trial) -> float:
-        params = spec.parameters(spec.search_space(trial), config.random_state, config.n_jobs)
+        params = spec.parameters(spec.search_space(trial), config.random_state, config.n_jobs, task=task)
         scores = []
         for training_rows, validation_rows in folds:
             fold_train = X_train.iloc[training_rows]
             pipeline = build_model_pipeline(spec, params, fold_train, config.preprocessing)
             pipeline.fit(fold_train, y_train.iloc[training_rows])
-            scores.append(metric.evaluate(pipeline, X_train.iloc[validation_rows], y_train.iloc[validation_rows]))
+            scores.append(metric.evaluate(pipeline, X_train.iloc[validation_rows], y_train.iloc[validation_rows], task=task))
         trial.set_user_attr("fold_scores", scores)
         trial.set_user_attr("estimator_params", params)
         return float(np.mean(scores))
