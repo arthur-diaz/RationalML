@@ -1,4 +1,4 @@
-# RationalML — V0.4.0
+# RationalML — V0.5.0
 
 RationalML compare et optimise des modèles de classification binaire,
 multiclass et de régression sur les
@@ -335,6 +335,59 @@ RMSE 8 contre 10 donne +2. Une valeur négative indique une performance inférie
 `cv_score`. `n_trials_completed` compte seulement les essais Optuna `COMPLETE`,
 utile avec timeout ; FAIL et PRUNED sont exclus. Aucun timing n'est ajouté.
 
+## Business ranking
+
+**All ranking diagnostics are computed on the untouched holdout test set.**
+Les analyses lisent les prédictions de l'évaluation initiale, après sélection
+et refit du gagnant. Aucun nouvel appel au modèle ; aucun retour vers Optuna,
+la baseline ou le preprocessing. `result.test_predictions` retourne une copie
+indépendante avec l'index original, y compris ses doublons :
+
+| Tâche | Colonnes de `test_predictions` |
+| --- | --- |
+| binary | `y_true`, `y_pred` en labels originaux ; `score` = P(positive_class) |
+| multiclass | `y_true`, `y_pred` en labels originaux ; `proba_0`, `proba_1`… ; colonne `proba_j` = P(classes_[j]) |
+| regression | `y_true`, `y_pred`, `residual` = y_true − y_pred |
+
+Les noms de probabilités utilisent leur position, sans dépendre du texte des
+labels. L'inférence ultérieure ne modifie pas cet artefact.
+
+```python
+# Binary : score de la classe positive déjà définie.
+ranking = result.ranking_table(n_bins=10)
+ranking[["segment", "count", "positive_rate", "cumulative_positive_capture", "lift"]]
+top10 = result.top_segment(0.10)
+top10.score.mean()
+
+# Multiclass : analyse one-vs-rest explicite, class_label obligatoire.
+multiclass_result.ranking_table(class_label="gold", n_bins=10)
+multiclass_result.top_segment(0.10, class_label="gold")
+
+# Regression : niveaux de prédiction, sans notion de classe positive ou lift.
+regression_result.ranking_table(n_bins=10)
+regression_result.top_segment(0.10)
+```
+
+Le segment 1 contient les scores/prédictions les plus élevés. Le tri décroissant
+est stable : les égalités gardent l'ordre stocké du holdout. Le découpage utilise
+la position, avec `effective_bins=min(n_bins, n_rows)` : groupes non vides,
+tailles différant d'au plus une ligne, sans qcut. `n_bins` doit être un entier
+>= 2, hors bool. Le top contient exactement `ceil(n_rows*fraction)` lignes,
+au moins une, sans extension pour les égalités ; `0 < fraction <= 1`.
+
+Binary/one-vs-rest retourne `segment`, `count`, `score_min`, `score_max`,
+`score_mean`, `positives`, `positive_rate`, `population_share`, `positive_capture`,
+`cumulative_positive_capture`, `lift`, `cumulative_lift`. La capture rapporte les
+positifs aux positifs totaux ; le lift rapporte le taux positif au taux global,
+et sa version cumulative utilise les lignes depuis le segment 1. Zéro positif
+produit une erreur explicite. `class_label` est réservé au multiclass et vérifié
+parmi `classes_`.
+
+Regression retourne `segment`, `count`, `pred_min`, `pred_max`, `pred_mean`,
+`actual_mean`, `bias`, `mae`, `rmse`. Le biais vaut pred_mean − actual_mean,
+donc l'opposé du résidu moyen. Tous les tableaux contiennent des valeurs brutes,
+sans Styler, formatage ou seuil interprétatif.
+
 ## Protocole et responsabilités
 
 ```text
@@ -349,6 +402,7 @@ FULL DATA
           ├── choix du modèle et des paramètres par score CV
           └── Pipeline final neuf, fit sur TRAIN complet
                     └── transform et évaluation unique sur TEST
+                          └── prédictions conservées → ranking/top sur demande
 ```
 
 Le holdout ne participe à aucun fit, à Optuna, ni à la sélection des modèles.
@@ -374,6 +428,15 @@ via `MetricRegistry.register(MetricSpec(...))`. Le modèle doit accepter
 random_state, déclarer `n_jobs_parameter` (ou None), supporter predict_proba en classification
 et définir `requires_scaling` pour basic. Aucune modification du moteur n'est
 nécessaire pour l'enregistrer.
+
+## Migration V0.4.0 → V0.5.0
+
+L'API fit/inférence et le leaderboard gardent leurs contrats. Le résultat conserve
+désormais les prédictions du holdout : mémoire proportionnelle à ses lignes
+et, en multiclass, au nombre de classes. Les constructions manuelles doivent
+renseigner `_test_predictions` ; les anciens résultats sérialisés doivent être
+réentraînés pour disposer des nouveaux diagnostics. `test_predictions` est une
+propriété sans setter : modifier la copie retournée ne modifie pas le résultat.
 
 ## Migration V0.3.0 → V0.4.0
 
@@ -434,18 +497,20 @@ incorrects et leur contrat métier ambigu. `roc_auc` et `average_precision`
 
 ## Vérification et limites
 
-Vérification V0.4.0 : **360 tests réussis en 29,42 s**, **30 nouveaux cas**,
+Vérification V0.5.0 : **473 tests réussis en 37,88 s**, dont **113 nouveaux cas**,
 **1 warning attendu** (classe positive implicite sur labels chaînes),
 **0 échec et 0 skip**. LightGBM et XGBoost sont installés et testés.
 `pip check` retourne `No broken requirements found.` ; les versions API et
-installation éditable sont `RationalML==0.4.0`.
+installation éditable sont `RationalML==0.5.0`.
 
-Les 330 cas V0.3 sont conservés. Les tests V0.4 vérifient les baselines des trois
-tâches, les mêmes folds partagés, les diagnostics du meilleur trial, les essais
-COMPLETE et la reproductibilité. Ils tracent les fits/prédictions des dummies,
-excluent le holdout et le preprocessing, et prouvent que la baseline ne change
-ni les essais ni le gagnant. Le test de budget raccourci simule une étude
-terminée sans dépendre d'un temps d'exécution réel.
+Les 360 cas V0.4 sont conservés sans modification. Les tests V0.5 vérifient les
+calculs contrôlés de capture/lift et d'erreur régression, les scores identiques,
+les effectifs non divisibles, les paramètres invalides, les copies et les index.
+Ils couvrent les six modèles existants et les trois modes preprocessing.
+Les prédictions initiales sont partagées avec le scoring sans nouvel appel au
+modèle. Les diagnostics restent utilisables quand tout appel au modèle est
+bloqué. Modifier les features ou cibles du holdout, avec sa frontière fixée,
+change les diagnostics mais conserve CV, Optuna, baseline et gagnant.
 Les tests de fuite des trois tâches tracent les instances, les indices vus
 par fit/transform et les médianes propres à chaque fold. Ils vérifient le
 fit final sur le train seulement et la stabilité de la sélection lorsque
@@ -457,5 +522,5 @@ restent une erreur ; les constantes basic peuvent avertir par fold/essai.
 Aucune dépendance n'est ajoutée et aucun feature engineering automatique
 n'est introduit. Datetime automatique, sélection de
 features, outliers, logs, target encoding, encodage haute cardinalité, SHAP,
-MLflow, Excel, ranking/déciles, optimisation de seuil, calibration, CatBoost
-et group/time split restent hors V0.4. Aucune fonctionnalité V0.5 n'est ajoutée.
+MLflow, Excel, optimisation de seuil, calibration, CatBoost
+et group/time split restent hors V0.5. Aucune fonctionnalité V0.6 n'est ajoutée.

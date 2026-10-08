@@ -1,4 +1,4 @@
-"""RationalML V0.4.0 public API."""
+"""RationalML V0.5.0 public API."""
 
 from .automl import AutoML
 from .config import AutoMLConfig
@@ -13,4 +13,4 @@ __all__ = [
     "MetricRegistry", "MetricSpec", "ModelRegistry", "ModelSpec",
     "PreprocessingConfig", "FeatureSchema", "infer_schema", "build_preprocessor",
 ]
-__version__ = "0.4.0"
+__version__ = "0.5.0"

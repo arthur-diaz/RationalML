@@ -12,8 +12,9 @@ from threadpoolctl import threadpool_limits
 
 from .config import AutoMLConfig
 from .data import BinaryLabelEncoder, MulticlassLabelEncoder, validate_dataframe
-from .evaluation import MetricRegistry, evaluate_metrics
+from .evaluation import MetricRegistry
 from .evaluation.baseline import evaluate_baseline
+from .evaluation.predictions import evaluate_holdout
 from .exceptions import ConfigurationError, DataValidationError, UnsupportedTaskError
 from .models import ModelRegistry
 from .models.base import feature_importance
@@ -118,7 +119,7 @@ class AutoML:
         best_model = build_model_pipeline(best.spec, best.params, X_train, config.preprocessing)
         with threadpool_limits(limits=config.n_jobs if config.n_jobs > 0 else None):
             best_model.fit(X_train, y_train)
-            test_metrics = evaluate_metrics(best_model, X_test, y_test, task)
+            test_metrics, test_predictions = evaluate_holdout(best_model, X_test, y_test, original_test, task, encoder)
         transformed_names, source_features = transformed_feature_info(best_model, X.columns)
         return AutoMLResult(
             task=task, target=config.target, leaderboard=leaderboard,
@@ -134,5 +135,6 @@ class AutoML:
             test_indices=tuple(int(row) for row in test_rows),
             baseline_name=baseline_name, baseline_score=baseline_score,
             baseline_cv_std=float(np.std(baseline_fold_scores)), baseline_fold_scores=baseline_fold_scores,
+            _test_predictions=test_predictions,
             feature_schema=best_model.feature_schema_, transformed_feature_names=transformed_names,
         )
