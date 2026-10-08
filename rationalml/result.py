@@ -1,4 +1,4 @@
-"""Raw Python results and prediction using the fitted winning estimator."""
+"""Raw Python results and prediction using the fitted winning pipeline."""
 
 from dataclasses import dataclass
 from typing import Any
@@ -6,10 +6,12 @@ from typing import Any
 import numpy as np
 import pandas as pd
 from numpy.typing import NDArray
+from sklearn.pipeline import Pipeline
 
 from .config import AutoMLConfig
 from .data import BinaryLabelEncoder, validate_features
 from .exceptions import DataValidationError
+from .preprocessing.schema import FeatureSchema
 from .tasks import TaskType
 
 
@@ -18,7 +20,7 @@ class AutoMLResult:
     task: TaskType
     target: str
     leaderboard: pd.DataFrame
-    best_model: Any
+    best_model: Pipeline
     best_model_name: str
     best_params: dict[str, Any]
     metrics: dict[str, float]
@@ -30,6 +32,8 @@ class AutoMLResult:
     label_encoder: BinaryLabelEncoder
     train_indices: tuple[int, ...]
     test_indices: tuple[int, ...]
+    feature_schema: FeatureSchema | None = None
+    transformed_feature_names: tuple[str, ...] | None = None
 
     @property
     def positive_class(self) -> object:
@@ -48,15 +52,25 @@ class AutoMLResult:
 
     def _features(self, X: pd.DataFrame | NDArray[Any]) -> pd.DataFrame:
         if isinstance(X, pd.DataFrame):
-            if tuple(X.columns) != self.feature_names:
-                raise DataValidationError("Prediction columns and their order must match the training features.")
-            features = X.copy(deep=True)
+            if not X.columns.is_unique:
+                raise DataValidationError("Prediction columns must have unique names.")
+            missing = [name for name in self.feature_names if name not in X.columns]
+            extra = [name for name in X.columns if name not in self.feature_names]
+            if missing or extra:
+                raise DataValidationError(f"Prediction columns differ from training: missing={missing}, extra={extra}.")
+            features = X.loc[:, list(self.feature_names)].copy(deep=True)
         else:
+            if self.feature_schema is not None and self.feature_schema.categorical:
+                raise DataValidationError("Categorical prediction features require a pandas DataFrame with named columns.")
             values = np.asarray(X)
             if values.ndim != 2 or values.shape[1] != len(self.feature_names):
                 raise DataValidationError("Prediction input must be a 2D array with the training feature count.")
             features = pd.DataFrame(values.copy(), columns=self.feature_names)
-        validate_features(features)
+            features = features.infer_objects()
+        if self.feature_schema is not None:
+            self.feature_schema.validate_prediction(features)
+        else:
+            validate_features(features, preprocessing=self.config.preprocessing)
         return features
 
     def predict(self, X: pd.DataFrame | NDArray[Any]) -> NDArray[Any]:

@@ -17,6 +17,7 @@ from .exceptions import ConfigurationError, DataValidationError, UnsupportedTask
 from .models import ModelRegistry
 from .models.base import feature_importance
 from .optimization.optimizer import optimize_model
+from .preprocessing.builder import build_model_pipeline, transformed_feature_info
 from .result import AutoMLResult
 from .tasks import resolve_task
 
@@ -40,7 +41,7 @@ class AutoML:
 
     def fit(self, df: pd.DataFrame) -> AutoMLResult:
         config = replace(deepcopy(self.config))  # Revalidate mutable configuration.
-        validate_dataframe(df, config.target)
+        validate_dataframe(df, config.target, preprocessing=config.preprocessing)
         X = df.drop(columns=[config.target]).copy(deep=True)
         y = df[config.target].copy(deep=True)
         task = resolve_task(config.task, y)
@@ -58,7 +59,7 @@ class AutoML:
             if task not in spec.tasks:
                 raise UnsupportedTaskError(f"Model {spec.name!r} does not support {task.value}.")
             if not spec.supports_proba:
-                raise ConfigurationError(f"Binary V0.1 evaluation requires predict_proba: {spec.name!r}.")
+                raise ConfigurationError(f"Binary evaluation requires predict_proba: {spec.name!r}.")
         try:
             train_rows, test_rows = train_test_split(
                 np.arange(len(df)), test_size=config.test_size,
@@ -89,17 +90,21 @@ class AutoML:
             "model": item.spec.name, "rank": rank,
             "cv_score": item.score, "cv_std": float(np.std(item.fold_scores)),
         } for rank, item in enumerate(ordered, start=1)]).set_index("model")
-        best_model = best.spec.estimator_class(**best.params)
+        best_model = build_model_pipeline(best.spec, best.params, X_train, config.preprocessing)
         with threadpool_limits(limits=config.n_jobs if config.n_jobs > 0 else None):
             best_model.fit(X_train, y_train)
             test_metrics = evaluate_binary(best_model, X_test, y_test)
+        transformed_names, source_features = transformed_feature_info(best_model, X.columns)
         return AutoMLResult(
             task=task, target=config.target, leaderboard=leaderboard,
             best_model=best_model, best_model_name=best.spec.name,
             best_params=best.params.copy(), metrics=test_metrics.copy(),
             cv_results=pd.concat([item.cv_results for item in optimized], ignore_index=True),
-            test_metrics=test_metrics, feature_importance=feature_importance(best_model, X.columns),
+            test_metrics=test_metrics, feature_importance=feature_importance(
+                best_model.named_steps["estimator"], transformed_names, source_features,
+            ),
             config=config, feature_names=tuple(X.columns), label_encoder=encoder,
             train_indices=tuple(int(row) for row in train_rows),
             test_indices=tuple(int(row) for row in test_rows),
+            feature_schema=best_model.feature_schema_, transformed_feature_names=transformed_names,
         )

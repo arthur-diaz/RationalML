@@ -8,8 +8,11 @@ import numpy as np
 import pandas as pd
 from numpy.typing import NDArray
 from pandas.api.types import is_bool_dtype, is_float_dtype, is_integer_dtype
+from sklearn.base import BaseEstimator
 
 from .exceptions import DataValidationError
+from .preprocessing.config import PreprocessingConfig
+from .preprocessing.schema import validate_feature_structure, validate_raw_features
 
 
 @dataclass(frozen=True)
@@ -71,27 +74,42 @@ class BinaryLabelEncoder:
         return self.classes_[encoded.astype(np.int64)]
 
 
-def validate_features(X: pd.DataFrame) -> None:
-    if X.empty or not X.columns.is_unique:
-        raise DataValidationError("Features must be nonempty and have unique column names.")
-    if any(not isinstance(name, str) or not name for name in X.columns):
-        raise DataValidationError("Feature names must be nonempty strings.")
+def validate_features(
+    X: pd.DataFrame, *, preprocessing: str | PreprocessingConfig | BaseEstimator | None = None,
+) -> None:
+    """Validate prepared data, basic inputs or just custom-transformer columns."""
+    validate_feature_structure(X)
+    if isinstance(preprocessing, PreprocessingConfig) or (
+        isinstance(preprocessing, str) and preprocessing == "basic"
+    ):
+        validate_raw_features(X)
+        return
+    if preprocessing is not None:
+        return
+    guidance = (
+        "Prepare the data before RationalML, use preprocessing='basic', "
+        "or supply a custom sklearn transformer."
+    )
     invalid = [name for name, dtype in X.dtypes.items() if not (
         is_bool_dtype(dtype) or is_integer_dtype(dtype) or is_float_dtype(dtype)
     )]
     if invalid:
         raise DataValidationError(
-            f"V0.1 requires numeric or boolean features; prepare these columns explicitly: {invalid}."
+            f"preprocessing=None requires numeric or boolean features; incompatible columns: {invalid}. {guidance}"
         )
-    if X.isna().to_numpy().any() or not np.isfinite(X.to_numpy(dtype=float)).all():
-        raise DataValidationError("Features contain missing or infinite values; prepare them explicitly.")
+    if X.isna().to_numpy().any():
+        raise DataValidationError(f"preprocessing=None does not accept missing values. {guidance}")
+    if np.isinf(X.to_numpy(dtype=float)).any():
+        raise DataValidationError("preprocessing=None does not accept infinite values; prepare the data before RationalML.")
 
 
-def validate_dataframe(df: pd.DataFrame, target: str) -> None:
+def validate_dataframe(
+    df: pd.DataFrame, target: str, *, preprocessing: str | PreprocessingConfig | BaseEstimator | None = None,
+) -> None:
     if not isinstance(df, pd.DataFrame):
         raise DataValidationError("fit expects a pandas DataFrame.")
     if df.empty or not df.columns.is_unique:
         raise DataValidationError("The DataFrame must be nonempty and have unique columns.")
     if target not in df.columns:
         raise DataValidationError(f"Target column {target!r} is missing.")
-    validate_features(df.drop(columns=[target]))
+    validate_features(df.drop(columns=[target]), preprocessing=preprocessing)

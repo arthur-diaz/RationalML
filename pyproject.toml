@@ -4,8 +4,8 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "RationalML"
-version = "0.1.1"
-description = "Train-only Optuna optimization for binary classification"
+version = "0.2.1"
+description = "Optuna model comparison for prepared binary data with optional leakage-safe preprocessing"
 readme = "README.md"
 requires-python = ">=3.10"
 dependencies = [

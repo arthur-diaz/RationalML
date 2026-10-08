@@ -1,4 +1,4 @@
-"""Task names and deliberately limited V0.1 task resolution."""
+"""Task names and deliberately binary-only task resolution."""
 
 from enum import Enum
 
@@ -32,10 +32,10 @@ def resolve_task(task: str | TaskType, y: pd.Series) -> TaskType:
     is_auto = isinstance(task, str) and task.strip().lower() == "auto"
     resolved = TaskType.BINARY if is_auto else normalize_task(task)
     if resolved is not TaskType.BINARY:
-        raise UnsupportedTaskError(f"Task {resolved.value!r} is not implemented in V0.1.")
+        raise UnsupportedTaskError(f"Task {resolved.value!r} is not implemented in V0.2.")
     if y.nunique() != 2:
         raise UnsupportedTaskError(
-            f"V0.1 requires exactly two target classes; found {y.nunique()}. "
+            f"V0.2 requires exactly two target classes; found {y.nunique()}. "
             "Multiclass and regression are not implemented."
         )
     return resolved
