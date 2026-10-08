@@ -46,19 +46,24 @@ class MetricSpec:
 
 def evaluate_metrics(
     estimator: Any, X: pd.DataFrame, y: pd.Series, task: TaskType,
+    *, predictions: dict[str, NDArray[Any]] | None = None,
 ) -> dict[str, float]:
-    """Compute task metrics, calling predict/proba at most once each."""
+    """Compute metrics using full cached predictions, or one call of each type."""
     from .registry import MetricRegistry
 
     specs = [MetricRegistry.get(name) for name in MetricRegistry.available(task)]
-    predictions = {}
-    for prediction_type in ("predict", "proba"):
-        if not any(spec.prediction_type == prediction_type for spec in specs):
-            continue
-        values = getattr(estimator, "predict_proba" if prediction_type == "proba" else "predict")(X)
-        predictions[prediction_type] = values[:, 1] if prediction_type == "proba" and task is TaskType.BINARY else values
+    if predictions is None:
+        predictions = {}
+        for prediction_type in ("predict", "proba"):
+            if not any(spec.prediction_type == prediction_type for spec in specs):
+                continue
+            predictions[prediction_type] = np.asarray(
+                getattr(estimator, "predict_proba" if prediction_type == "proba" else "predict")(X)
+            )
     return {
-        spec.name: spec.score(y, predictions[spec.prediction_type]) for spec in specs
+        spec.name: spec.score(y, predictions["proba"][:, 1] if spec.prediction_type == "proba"
+                             and task is TaskType.BINARY else predictions[spec.prediction_type])
+        for spec in specs
     }
 
 

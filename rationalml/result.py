@@ -1,6 +1,6 @@
 """Raw Python results and prediction using the fitted winning pipeline."""
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Any
 
 import numpy as np
@@ -10,7 +10,8 @@ from sklearn.pipeline import Pipeline
 
 from .config import AutoMLConfig
 from .data import BinaryLabelEncoder, MulticlassLabelEncoder, validate_features
-from .exceptions import DataValidationError, UnsupportedTaskError
+from .exceptions import ConfigurationError, DataValidationError, UnsupportedTaskError
+from .evaluation.ranking import binary_ranking_table, regression_ranking_table, top_segment
 from .preprocessing.schema import FeatureSchema
 from .tasks import TaskType
 
@@ -36,8 +37,43 @@ class AutoMLResult:
     baseline_score: float
     baseline_cv_std: float
     baseline_fold_scores: tuple[float, ...]
+    _test_predictions: pd.DataFrame = field(repr=False)
     feature_schema: FeatureSchema | None = None
     transformed_feature_names: tuple[str, ...] | None = None
+
+    def __post_init__(self) -> None:
+        self._test_predictions = self._test_predictions.copy(deep=True)
+
+    @property
+    def test_predictions(self) -> pd.DataFrame:
+        """Return a copy of initial holdout predictions, with original row index."""
+        return self._test_predictions.copy(deep=True)
+
+    def _ranking_target(self, class_label: object | None) -> tuple[str, object | None]:
+        if self.task is TaskType.MULTICLASS:
+            if class_label is None:
+                raise ConfigurationError("Multiclass ranking requires class_label.")
+            labels = self.classes_.tolist()
+            try:
+                position = labels.index(class_label)
+            except (ValueError, TypeError) as error:
+                raise ConfigurationError(f"Unknown class_label={class_label!r}; available classes: {labels!r}.") from error
+            return f"proba_{position}", labels[position]
+        if class_label is not None:
+            raise ConfigurationError("class_label is only used for multiclass ranking.")
+        return ("score", self.positive_class) if self.task is TaskType.BINARY else ("y_pred", None)
+
+    def ranking_table(self, n_bins: int = 10, *, class_label: object | None = None) -> pd.DataFrame:
+        """Segment stored holdout predictions; multiclass uses explicit one-vs-rest."""
+        score_column, positive = self._ranking_target(class_label)
+        if self.task is TaskType.REGRESSION:
+            return regression_ranking_table(self._test_predictions, n_bins=n_bins)
+        return binary_ranking_table(self._test_predictions, positive_class=positive, n_bins=n_bins, score_column=score_column)
+
+    def top_segment(self, fraction: float = .10, *, class_label: object | None = None) -> pd.DataFrame:
+        """Select the highest stored holdout scores/predictions without model calls."""
+        score_column, _ = self._ranking_target(class_label)
+        return top_segment(self._test_predictions, fraction=fraction, score_column=score_column)
 
     @property
     def positive_class(self) -> object:
