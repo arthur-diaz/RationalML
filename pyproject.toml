@@ -1,0 +1,32 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "RationalML"
+version = "0.1.1"
+description = "Train-only Optuna optimization for binary classification"
+readme = "README.md"
+requires-python = ">=3.10"
+dependencies = [
+    "numpy>=1.24,<3",
+    "pandas>=2,<4",
+    "scikit-learn>=1.5,<2",
+    "optuna>=4,<6",
+    "threadpoolctl>=3.5,<4",
+]
+
+[project.optional-dependencies]
+boosting = ["lightgbm>=4,<5", "xgboost>=2,<4"]
+legacy = ["tqdm>=4"]
+test = ["pytest>=8,<10"]
+
+[tool.setuptools]
+py-modules = ["strategy", "sco_mod", "scoring", "report", "metrics", "second_step"]
+
+[tool.setuptools.packages.find]
+include = ["rationalml*"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "-ra"
