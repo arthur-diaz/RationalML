@@ -710,7 +710,7 @@ natives des estimateurs.
 Optuna utilise des essais séquentiels et un sampler seedé. `n_jobs` contrôle
 les threads des modèles et le calcul numérique. `n_trials` et `timeout`
 s'appliquent par modèle ; un timeout réel peut modifier le nombre d'essais
-terminés malgré un seed identique. `verbose` pilote le logger RationalML.
+terminés malgré un seed identique. Le contrat d'affichage est décrit ci-dessous.
 
 Les composants existants conservent leurs responsabilités. V0.3 ajoute
 seulement un encodeur multiclass, des entrées de registries et des branches
@@ -724,6 +724,111 @@ via `MetricRegistry.register(MetricSpec(...))`. Le modèle doit accepter
 random_state, déclarer `n_jobs_parameter` (ou None), supporter predict_proba en classification
 et définir `requires_scaling` pour basic. Aucune modification du moteur n'est
 nécessaire pour l'enregistrer.
+
+## CPU, affichage et durées — préparation V1.1
+
+Ces ajouts sont présents sur la branche de préparation V1.1 ; la version du
+projet reste **1.0.0** jusqu'à une décision de release séparée. Ils ne sont pas
+encore inclus dans la distribution PyPI 1.0.0.
+
+```python
+result = AutoML(
+    target="churn", positive_class=1, preprocessing=None,
+    models="auto", n_jobs=2, verbose=1,
+).fit(df_model)
+
+print(result.summary())  # str ; aucune nouvelle prédiction ni aucun fit
+print(result.fit_time)   # secondes
+print(result.model_fit_times)  # dict[str, float], dans l'ordre des modèles demandés
+```
+
+| n_jobs | Contrat |
+|---|---|
+| `1` (défaut) | Un thread de calcul par backend contrôlé. |
+| `N > 0` | Au maximum N threads par backend contrôlé. |
+| `-1` | CPU disponibles selon les conventions des backends ; aucune limite supplémentaire imposée aux pools natifs. |
+
+Les trials Optuna et les folds CV restent **séquentiels** : n_jobs ne crée
+aucun worker Optuna, aucun parallélisme de folds, ni nouvelle couche joblib.
+LightGBM et XGBoost reçoivent n_jobs, en classification comme en régression.
+LogisticRegression/lbfgs et Ridge utilisent les limites BLAS/OpenMP de
+threadpoolctl ; aucun paramètre n_jobs artificiel n'est transmis à Ridge.
+Ces limites sont temporaires pendant CV, refit, évaluation et les méthodes
+`result.predict*`, puis restaurées même en cas d'erreur. Avec -1, une limite
+native imposée extérieurement reste respectée. n_jobs refuse 0, les entiers
+inférieurs à -1, les booléens et les valeurs non entières.
+
+Il s'agit d'un budget par backend contrôlable, sans affinité CPU imposée au
+processus. Le parallélisme propre à un transformer utilisateur reste sous
+sa responsabilité. Un modèle enregistré déclare `n_jobs_parameter` dans
+ModelSpec. Les appels directs à best_model utilisent le contrat natif sklearn.
+
+| verbose | Affichage RationalML |
+|---|---|
+| `0` | Aucune sortie normale, aucun INFO Optuna et aucune barre. |
+| `1` (défaut) | Présentation du run, progression réelle, résumé final ; aucun détail de trial Optuna. |
+| `>= 2` | Présentation, détails INFO des trials Optuna, résumé final ; aucune barre. |
+
+Comme en V1.0, verbose accepte tout entier >= 0, sans borne supérieure :
+2, 3 et 10 utilisent le même mode détaillé. Les négatifs, booléens et
+valeurs non entières sont refusés. Seul l'affichage dépend de verbose.
+
+Les modèles intégrés conservent leurs réglages informatifs silencieux.
+Les niveaux Optuna sont appliqués temporairement et restaurés dans un finally,
+y compris les niveaux explicites des loggers enfants existants. Les handlers,
+formatters, filtres et la propagation configurés par l'utilisateur sont conservés.
+Le contrôle du logging Optuna et des pools natifs agit au niveau du processus :
+éviter de lancer simultanément des fits indépendants dans des threads partageant
+ces configurations globales ; aucun parallélisme de ce type n'est créé ici.
+
+La barre utilise uniquement la bibliothèque standard. Son total est
+`nombre de modèles × n_trials`. Chaque trial terminé compte une fois,
+y compris FAIL/PRUNED ; un trial encore RUNNING ne compte pas. Le moteur
+conserve NopPruner et son comportement d'arrêt sur une exception non gérée.
+Une interruption ou un timeout affiche le compteur réellement atteint, sans
+compléter artificiellement la barre. Dans un terminal, la ligne est réécrite ;
+dans un fichier/notebook, une ligne est émise par modèle et à la fermeture.
+n_trials et timeout restent des budgets **par modèle**. Un timeout est contrôlé
+entre trials et n'interrompt pas un fold en cours.
+
+Les warnings Python conservent les filtres standard ou ceux définis par
+l'utilisateur à tous les niveaux verbose. Aucune agrégation ni suppression
+globale des warnings sklearn n'est ajoutée. Un vrai problème peut donc être
+signalé même avec verbose=0. Les erreurs/warnings Optuna restent accessibles.
+
+Les durées utilisent `time.perf_counter()` et sont disponibles à tous les
+niveaux verbose, sans ajout de colonne aux tableaux V1 :
+
+- `fit_time: float` : secondes depuis l'entrée de fit, incluant validation,
+  copies, split, baseline, CV/Optuna, refit, évaluation unique TEST, importance
+  et construction du résultat. Inclut la présentation/progression éventuelle,
+  mais exclut l'impression du résumé final et toute opération post-fit.
+- `model_fit_times: dict[str, float]` : temps d'optimisation de chaque modèle,
+  incluant ses espaces, construction de pipelines, fits et évaluations CV.
+  Le gagnant inclut en plus la construction et le fit de son pipeline final
+  sur TRAIN complet. Exclut split, baseline, holdout et feature importance.
+  Un non-gagnant n'est pas refitted après sélection.
+- `summary() -> str` : classement CV, gagnant, métrique primaire, score TEST
+  déjà stocké et durées. Ne fait aucun print, fit, predict, ranking ou export,
+  et ne modifie pas les résultats. Utiliser `print(result.summary())` pour
+  réafficher le résumé terminal.
+
+L'affichage ne participe à aucune décision ML. Les durées ne sont pas
+reproductibles ; un budget timeout peut déjà faire varier le nombre de trials
+à cause des temps d'exécution, y compris du coût de l'affichage.
+
+L'espace LightGBM moderne est borné pour limiter les configurations
+structurellement dégénérées : profondeur 2–12, feuilles 4–128 limitées par
+2**max_depth, learning_rate 0.01–0.2 logarithmique, L1/L2 1e-8–10
+logarithmiques, min_split_gain 0–0.1, min_child_samples 5–50,
+colsample_bytree 0.5–1, subsample 0.6–1 et subsample_freq 1–5.
+Les trois tâches partagent cet espace ; les objectifs restent distincts.
+`min_child_samples` utilise `suggest_int` linéaire : 20 est la valeur par défaut
+LightGBM, 5 apporte de la flexibilité et 50 conserve une régularisation importante.
+Cette borne réduit les configurations limitant fortement les splits sur de petits
+datasets, sans dépendre de la tâche ni du dataset Credit Card Fraud.
+Les domaines explicitement fournis, notamment legacy, restent conservés.
+Aucun class weight, rééquilibrage ni seuil automatique n'est ajouté.
 
 ## Reproducibility
 

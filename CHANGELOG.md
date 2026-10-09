@@ -4,6 +4,28 @@ L'historique ci-dessous repose sur les tags, commits et contrats présents dans
 ce dépôt ; il ne présume pas de publications PyPI. Les correctifs 0.1.x et
 le recentrage 0.2.1 n'ont pas de tag distinct dans l'historique disponible.
 
+## Unreleased — préparation 1.1
+
+- Contrat CPU existant vérifié : n_jobs 1/N/-1, trials et folds séquentiels,
+  paramètres des arbres et limites BLAS/OpenMP temporaires. Les méthodes
+  result.predict* appliquent désormais aussi ces limites natives.
+- verbose compatible V1 : 0 pour le silence, 1 pour progression/résumé, >=2 pour les détails
+  Optuna/résumé. Restauration des niveaux de logging même en cas d'exception,
+  sans modification des handlers utilisateur ni des filtres de warnings.
+- Progression en bibliothèque standard, fondée sur les trials terminés,
+  y compris échecs/pruning ; budgets incomplets et interruptions explicites.
+- AutoMLResult.fit_time, model_fit_times et summary() -> str, à partir des
+  résultats stockés ; aucun changement des schémas de tableaux ni des 11 exports.
+- Espace LightGBM moderne corrigé après audit : régularisation/gain réduits,
+  feuilles cohérentes avec la profondeur, taux d'apprentissage logarithmique
+  et sous-échantillonnages moins agressifs. Domaines legacy conservés.
+- min_child_samples moderne : [5, 100] → [5, 50], avec suggest_int linéaire.
+  Inclut le défaut LightGBM 20, la flexibilité de 5 et la régularisation de 50,
+  pour limiter les trials peu exploitables sur petits datasets, indépendamment
+  de la tâche et de Credit Card Fraud. Aucun autre domaine LightGBM modifié
+  lors de cet ajustement ; domaines legacy conservés à [5, 100].
+- Version pyproject.toml maintenue à 1.0.0 ; aucun tag ni publication 1.1.
+
 ## 1.0.0
 
 RationalML 1.0 stabilise le contrat public. Sa philosophie reste : données

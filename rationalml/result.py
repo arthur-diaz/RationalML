@@ -8,6 +8,7 @@ import numpy as np
 import pandas as pd
 from numpy.typing import NDArray
 from sklearn.pipeline import Pipeline
+from threadpoolctl import threadpool_limits
 
 from .config import AutoMLConfig
 from .data import BinaryLabelEncoder, MulticlassLabelEncoder, validate_features
@@ -48,9 +49,26 @@ class AutoMLResult:
     feature_schema: FeatureSchema | None = None
     transformed_feature_names: tuple[str, ...] | None = None
     model_best_params: dict[str, dict[str, Any]] = field(default_factory=dict)
+    fit_time: float = 0.0
+    model_fit_times: dict[str, float] = field(default_factory=dict)
 
     def __post_init__(self) -> None:
         self._test_predictions = self._test_predictions.copy(deep=True)
+
+    def summary(self) -> str:
+        """Return a terminal summary using stored results only, without printing."""
+        label = self.task.value if self.task is TaskType.REGRESSION else f"{self.task.value} classification"
+        lines = [f"RationalML - {label}", "Results (CV)", "-" * 48]
+        for name, row in self.leaderboard.iterrows():
+            lines.append(f"{int(row['rank'])}. {name:<24} {row['cv_score']:.4f}")
+        lines.extend([
+            "", f"Best model      {self.best_model_name}",
+            f"Primary metric  {self.primary_metric}",
+            f"Test {self.primary_metric:<10} {self.test_metrics[self.primary_metric]:.4f}",
+            f"Elapsed time    {self.fit_time:.2f} s",
+        ])
+        lines.extend(f"Model time      {name}: {seconds:.2f} s" for name, seconds in self.model_fit_times.items())
+        return "\n".join(lines)
 
     @property
     def test_predictions(self) -> pd.DataFrame:
@@ -193,7 +211,8 @@ class AutoMLResult:
 
     def predict(self, X: pd.DataFrame | NDArray[Any]) -> NDArray[Any]:
         """Predict original classification labels or numeric regression values."""
-        encoded = np.asarray(self.best_model.predict(self._features(X)))
+        with threadpool_limits(limits=self.config.n_jobs if self.config.n_jobs > 0 else None):
+            encoded = np.asarray(self.best_model.predict(self._features(X)))
         return encoded if self.task is TaskType.REGRESSION else self.label_encoder.inverse_transform(encoded)
 
     def predict_proba(self, X: pd.DataFrame | NDArray[Any]) -> NDArray[np.float64]:
@@ -202,7 +221,8 @@ class AutoMLResult:
             raise UnsupportedTaskError("predict_proba is only available for classification tasks.")
         if not callable(getattr(self.best_model, "predict_proba", None)):
             raise TypeError(f"Model {self.best_model_name!r} does not support predict_proba.")
-        return np.asarray(self.best_model.predict_proba(self._features(X)), dtype=float)
+        with threadpool_limits(limits=self.config.n_jobs if self.config.n_jobs > 0 else None):
+            return np.asarray(self.best_model.predict_proba(self._features(X)), dtype=float)
 
     def predict_positive_proba(self, X: pd.DataFrame | NDArray[Any]) -> NDArray[np.float64]:
         """Return a 1D vector of P(y = positive_class)."""
