@@ -1,0 +1,76 @@
+name: RationalML validation
+
+on:
+  push:
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  core:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        python: ["3.10", "3.11", "3.12"]
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-python@v7
+        with:
+          python-version: ${{ matrix.python }}
+      - run: python -m pip install -e ".[test]"
+      - run: python -m pytest -q
+      - run: python -m pip check
+
+  full-extras:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-python@v7
+        with:
+          python-version: "3.12"
+      - run: python -m pip install -e ".[test,boosting,excel,mlflow,shap]"
+      - run: python -m pytest -q
+      - run: python -m pip check
+
+  optional-minimums:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: shap-xgboost
+            python: "3.10"
+            packages: '".[test,shap,boosting]" "shap==0.49.1" "xgboost==3.0.5"'
+            tests: "tests/test_shap_explainability.py tests/test_shap_validation.py tests/test_shap_outputs.py tests/test_shap_optional_dependency.py tests/test_shap_robustness.py"
+          - name: mlflow
+            python: "3.12"
+            # MLflow 3.1 imports a pool class removed in SQLAlchemy 2.1.
+            packages: '".[test,mlflow,boosting]" "mlflow==3.1.*" "sqlalchemy<2.1"'
+            tests: "tests/test_mlflow_tracking.py tests/test_mlflow_config.py tests/test_calibration_mlflow.py"
+          - name: excel
+            python: "3.12"
+            packages: '".[test,excel]" "openpyxl==3.0.10"'
+            tests: "tests/test_excel_reporting.py tests/test_excel_atomic.py tests/test_excel_optional_dependency.py tests/test_calibration_excel.py"
+    name: Minimum ${{ matrix.name }} / Python ${{ matrix.python }}
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-python@v7
+        with:
+          python-version: ${{ matrix.python }}
+      - run: python -m pip install -e ${{ matrix.packages }}
+      - run: python -m pytest -q ${{ matrix.tests }}
+      - run: python -m pip check
+
+  packaging:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-python@v7
+        with:
+          python-version: "3.12"
+      - run: python -m pip install build
+      - run: python -m build
+      - run: python tools/check_wheel.py dist/rationalml-0.10.0-py3-none-any.whl
+      - run: python -m pip check

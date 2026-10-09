@@ -1,4 +1,4 @@
-# RationalML — V0.9.0
+# RationalML — V0.10.0
 
 RationalML compare et optimise des modèles de classification binaire,
 multiclass et de régression sur les
@@ -23,7 +23,7 @@ Python 3.10 ou plus, depuis ce dossier :
 
 ```powershell
 python -m venv .venv
-.\.venv\Scripts\python.exe -m pip install -e ".[boosting,legacy,test,excel,mlflow]"
+.\.venv\Scripts\python.exe -m pip install -e ".[test,boosting,excel,mlflow,shap]"
 .\.venv\Scripts\python.exe -m pytest -q -p no:cacheprovider
 .\.venv\Scripts\python.exe -m pip check
 ```
@@ -220,6 +220,12 @@ les classes doivent être présentes dans le test. Les catégories pandas non
 observées de la cible ne comptent pas comme classes. En régression, au moins
 deux lignes par fold validation et dans le test sont exigées pour que R2 soit
 défini. Aucune cible n'est imputée.
+
+Les noms de modèles demandés doivent être uniques, y compris après normalisation
+des espaces et de la casse. Les doublons produisent `ConfigurationError` qui
+les nomme, sans déduplication silencieuse. En cas d'égalité exacte de CV,
+le premier modèle demandé conserve la priorité. Les options numériques telles
+que `cv`, `n_trials`, `random_state` et `n_jobs` refusent les booléens.
 
 Dans les trois modes, un DataFrame d'inférence doit contenir exactement les
 mêmes noms de features, chacun une fois. Leur ordre peut changer : RationalML
@@ -489,7 +495,11 @@ indique la commande d'installation. L'extra requiert `openpyxl>=3.0.10,<4` ;
 l'écriture directe ne dépend pas des exigences du writer Excel de pandas.
 
 Le chemin doit avoir l'extension `.xlsx` et un parent existant. Les dossiers
-ne sont pas créés et un fichier existant est écrasé. Les limites de
+ne sont pas créés. La sauvegarde complète dans un temporaire du même dossier
+précède le remplacement atomique via `os.replace` ; une erreur de sauvegarde
+ou de remplacement laisse l'ancien fichier intact et nettoie le temporaire.
+Sous Windows, la destination doit être disponible au remplacement, donc
+fermée par les autres lecteurs. Les limites de
 1 048 576 lignes **en-tête compris** et 16 384 colonnes sont vérifiées avant
 sauvegarde : aucune troncature silencieuse. Les textes trop longs ou les
 nombres infinis provoquent aussi une erreur explicite.
@@ -663,6 +673,10 @@ FULL DATA
 ```
 
 Le holdout ne participe à aucun fit, à Optuna, ni à la sélection des modèles.
+**TEST n'intervient jamais dans le choix du modèle.** Il n'apprend ni catégories,
+ni imputation/scaling, ni hyperparamètres. SHAP reçoit un background explicite
+sur demande après fit ; RationalML ne le choisit pas dans TEST. Les diagnostics
+de calibration ne recalibrent jamais le modèle.
 Le mode basic construit un preprocessor neuf ; le mode expert clone celui
 fourni. Aucun transformer fitted n'est partagé entre folds. Early stopping
 et pruning restent désactivés, et les métriques utilisent les prédictions
@@ -685,6 +699,38 @@ via `MetricRegistry.register(MetricSpec(...))`. Le modèle doit accepter
 random_state, déclarer `n_jobs_parameter` (ou None), supporter predict_proba en classification
 et définir `requires_scaling` pour basic. Aucune modification du moteur n'est
 nécessaire pour l'enregistrer.
+
+## Reproducibility
+
+`random_state` contrôle le split train/test, les folds CV, le sampler Optuna
+et le seed des modèles construits par RationalML. À données, configuration
+et environnement identiques, les tests comparent sélection, paramètres,
+prédictions et diagnostics avec des tolérances numériques adaptées. Un
+transformer utilisateur reste responsable de ses propres sources d'aléa.
+Cela ne promet pas une égalité bit-à-bit universelle entre bibliothèques,
+versions, plateformes ou niveaux de parallélisme. Un timeout peut aussi
+changer le nombre de trials terminés. Le roundtrip pickle des pipelines
+built-in est testé dans une même version, sans garantie inter-version.
+
+## API publique avant V1
+
+RationalML reste en **0.x** : la stabilité sémantique complète de V1 n'est
+pas encore promise. Les contrats publics destinés à être stabilisés sont
+`AutoML` / `AutoMLConfig`, `fit`, les prédictions d'`AutoMLResult`, ses
+tables ranking/calibration, `to_excel`, `log_mlflow` et `explain`, ainsi que
+les registries/specs et les configurations optionnelles exportées dans
+`rationalml.__all__`. Leurs signatures principales sont verrouillées par
+les tests V0.10. Les helpers internes restent privés.
+
+## Migration V0.9.0 → V0.10.0
+
+Aucune signature ni fonctionnalité ML nouvelle. Les doublons de modèles
+étaient déjà refusés ; l'erreur identifie maintenant les noms concernés.
+L'export Excel remplace la destination seulement après sauvegarde complète
+dans un temporaire du même dossier, fermé avant écriture sur Windows et
+nettoyé en cas d'échec. L'ancien fichier reste intact si save/replace échoue.
+Les erreurs RationalML explicites traversent SHAP sans être réemballées ;
+les autres erreurs conservent leur cause dans `ConfigurationError`.
 
 ## Migration V0.8.0 → V0.9.0
 
@@ -788,72 +834,57 @@ incorrects et leur contrat métier ambigu. `roc_auc` et `average_precision`
 
 ## Vérification et limites
 
-Vérification V0.9.0 : **1005 tests réussis en 307,18 s**, dont **198 nouveaux cas**,
-**2 warnings** (classe positive implicite et dépréciation SQLAlchemy `noload`
-dans le store SQL MLflow),
-**0 échec et 0 skip**. LightGBM et XGBoost sont installés et testés.
-`pip check` retourne `No broken requirements found.` avant puis après mise à jour
-de l'installation éditable ; les versions API et installation sont `RationalML==0.9.0`.
-Openpyxl **3.0.10**, version minimale déclarée, est testé par écriture directe.
-MLflow **3.17.0** est testé avec SQLite et des artefacts locaux sous `tmp_path`,
-sans serveur et avec les connexions réseau bloquées dans les tests.
+La V0.10 conserve les 1005 cas V0.9 et ajoute **128 cas** (24 fonctions de test
+avec paramétrisation). Les nouveaux tests couvrent :
 
-Les **807 cas V0.8 sont conservés sans modification**. Les nouveaux cas SHAP
-utilisent **SHAP 0.49.1** avec Python **3.12.6**, LogisticRegression, Ridge,
-LightGBM **4.7.0** et XGBoost **3.4.1**. Cette dernière combinaison vérifie
-l'erreur de compatibilité explicite. Une installation isolée **XGBoost 3.0.5**
-exécute en plus **29 cas XGBoost réussis en 5,03 s**, couvrant les trois tâches,
-les trois modes preprocessing, les classes originales et l'additivité raw.
-L'installation principale reste en XGBoost 3.4.1.
+- holdout features/targets modifiés avec split explicitement fixé, deux candidats,
+  trois tâches et trois modes preprocessing ;
+- statistiques finales basic inspectées et indices CV identiques pour baseline
+  et trois modèles, avec priorité utilisateur en cas d'égalité ;
+- reproductibilité des six modèles built-in, diagnostics et roundtrip pickle ;
+- DataFrame/config/transformer utilisateur inchangés, indices atypiques et copies
+  indépendantes des tableaux, absence d'état caché post-fit ;
+- configurations ambiguës, cibles/features invalides et petits effectifs avant Optuna ;
+- signatures publiques, exports racine, versions, metadata et import sans extras ;
+- échecs de sauvegarde/remplacement Excel et transparence des exceptions SHAP.
 
-Les tests SHAP bloquent tous les fit/fit_transform, Optuna, reconstruction de
-pipeline et exports. Ils comparent les modèles sérialisés avant/après, les
-résultats et données d'entrée, et vérifient le background intégral de 137 lignes,
-l'import lazy, le fonctionnement de fit sans SHAP, les erreurs de colonnes/types,
-les index, les noms custom, les formes de sorties et le chemin sparse linéaire.
-Aucune nouvelle donnée ou explication n'est conservée dans le résultat.
-La matrice Python 3.10 + SHAP 0.49.1 n'a pas été exécutée dans cet environnement.
+La CI [.github/workflows/ci.yml](.github/workflows/ci.yml) comprend le core sans
+extras sous Python 3.10/3.11/3.12, la suite complète avec extras sous 3.12,
+les minima SHAP/XGBoost, MLflow et Excel, puis le build sdist/wheel. Chaque
+job vérifie pip check. Le smoke test [tools/check_wheel.py](tools/check_wheel.py)
+réinstalle le wheel core dans un nouveau venv, importe hors du dépôt avec -I,
+vérifie la version installée et l'absence des cinq dépendances optionnelles.
+Le sdist inclut également les fixtures/helpers nécessaires aux tests.
 
-Les tests de calibration couvrent les formules
-manuelles Brier/ECE/MCE, le binning, les égalités, les index, les probabilités
-invalides, les labels originaux et le one-vs-rest explicite. Ils bloquent les
-appels ML et vérifient les diagnostics même sans best_model, l'immutabilité,
-l'absence d'effet sur la sélection lorsque seul le holdout change, ainsi que
-les cellules Excel numériques et l'artefact MLflow agrégé confidentiel.
-Les tests MLflow
-relisent les runs, leurs tables et le Pipeline sérialisé ; ils vérifient
-les paramètres par candidat, exactement quatre runs pour trois modèles et
-cinq trials, l'opt-in des prédictions et le choix multiclass. Fit/predict,
-Optuna, métriques et transformations sont bloqués pendant le tracking dans
-les trois modes preprocessing et tâches, avec ou sans modèle. Les tests
-couvrent l'import lazy, les runs utilisateurs, les échecs backend, la restauration
-des URI/variables d'environnement et l'immutabilité. Les tests Excel relisent
-les classeurs pour les trois tâches : données, types numériques, formats,
-classes explicites, index, prédictions optionnelles, limites et immutabilité.
-Ils bloquent fit/predict/predict_proba, transformations, métriques et Optuna,
-même après suppression du dataset original, dans les trois modes preprocessing.
-L'import sans openpyxl et l'erreur d'installation sont également testés.
-Les tests ranking vérifient les
-calculs contrôlés de capture/lift et d'erreur régression, les scores identiques,
-les effectifs non divisibles, les paramètres invalides, les copies et les index.
-Ils couvrent les six modèles existants et les trois modes preprocessing.
-Les prédictions initiales sont partagées avec le scoring sans nouvel appel au
-modèle. Les diagnostics restent utilisables quand tout appel au modèle est
-bloqué. Modifier les features ou cibles du holdout, avec sa frontière fixée,
-change les diagnostics mais conserve CV, Optuna, baseline et gagnant.
-Les tests de fuite des trois tâches tracent les instances, les indices vus
-par fit/transform et les médianes propres à chaque fold. Ils vérifient le
-fit final sur le train seulement et la stabilité de la sélection lorsque
-seules les features du holdout changent.
+Validations locales Windows :
 
-La mémoire du OneHot dense basic et la matrice CI des versions minimales
-(dont MLflow 3.1, non exécuté dans cet environnement)
-restent à surveiller. Les colonnes entièrement manquantes dans un fold basic
-restent une erreur ; les constantes basic peuvent avertir par fold/essai.
-Openpyxl et MLflow restent dans leurs extras respectifs, sans dépendance obligatoire
-supplémentaire. Aucun feature engineering automatique n'est introduit.
-Datetime automatique, sélection de
-features, outliers, logs, target encoding, encodage haute cardinalité,
-optimisation de seuil, recalibration du modèle, CatBoost, Model Registry/deployment
-et group/time split restent hors V0.9. Aucune fonctionnalité V0.10
-n'est ajoutée.
+| Environnement | Tests réussis | Warnings | Skips |
+| --- | ---: | ---: | ---: |
+| Tous les extras, Python 3.12.6 | 1133 | 2 | 0 |
+| Core sans extras, Python 3.10.19 | 748 | 10 | 72 |
+| SHAP 0.49.1 + XGBoost 3.0.5, Python 3.10.19 | 207 | 7 | 0 |
+| MLflow 3.1.4 + SQLAlchemy 2.0.54, Python 3.12.6 | 110 | 28 | 0 |
+| Openpyxl 3.0.10, Python 3.12.6 | 128 | 0 | 0 |
+
+Les skips core proviennent exclusivement de pytest.importorskip pour les
+extras absents. Les warnings sont conservés : classe positive implicite ;
+SettingWithCopyWarning dans les anciens transformers de test qui écrivent
+volontairement sur leurs entrées (pandas 2) ; dépréciations internes MLflow
+(noload SQLAlchemy 2.1, utcnow, Pydantic et Query.get). Aucun filtre global de
+warnings n'est ajouté. La suite complète passe en 331,47 secondes, sans échec.
+
+**Compatibilité constatée :** MLflow 3.1.4 importe
+FallbackAsyncAdaptedQueuePool, supprimé en SQLAlchemy 2.1. Le job minimum
+et sa validation locale utilisent donc sqlalchemy<2.1. Pour reproduire :
+`pip install "rationalml[mlflow]" "mlflow==3.1.*" "sqlalchemy<2.1"`.
+La borne mlflow>=3.1,<4 reste inchangée. SHAP 0.49.x conserve la restriction
+sur XGBoost à base_score vectoriel (>=3.1) : fit/predict restent fonctionnels,
+explain exige pour ce chemin XGBoost <3.1. La destination Excel doit être
+fermée par ses lecteurs lors du remplacement atomique sous Windows.
+Les jobs GitHub Actions sont configurés ; Python 3.11 n'est pas exécuté localement.
+
+La mémoire du OneHot dense basic reste à surveiller. Les colonnes entièrement
+manquantes dans un fold basic restent une erreur ; les constantes peuvent
+avertir par fold/essai. Aucun preprocessing, modèle, métrique, explainer,
+export ou API de persistence supplémentaire n'est ajouté en V0.10.
+Aucune fonctionnalité V1.0 n'est développée.

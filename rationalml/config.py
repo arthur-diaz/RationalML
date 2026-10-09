@@ -57,8 +57,14 @@ class AutoMLConfig:
             if any(not isinstance(name, str) or not name.strip() for name in self.models):
                 raise ConfigurationError("Every model name must be a nonempty string.")
             self.models = [name.strip().lower() for name in self.models]
-            if len(set(self.models)) != len(self.models) or "auto" in self.models:
-                raise ConfigurationError("models must contain distinct explicit names.")
+            duplicates = list(dict.fromkeys(name for name in self.models if self.models.count(name) > 1))
+            if duplicates:
+                raise ConfigurationError(
+                    "models must contain unique model names; duplicate: "
+                    + ", ".join(repr(name) for name in duplicates) + "."
+                )
+            if "auto" in self.models:
+                raise ConfigurationError("models must contain explicit names; 'auto' must be used alone.")
         else:
             raise ConfigurationError("models must be 'auto', a model name or a nonempty list.")
         if (
