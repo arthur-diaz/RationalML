@@ -20,7 +20,7 @@ if TYPE_CHECKING:
 EXCEL_MAX_ROWS = 1_048_576
 EXCEL_MAX_COLUMNS = 16_384
 _PERCENTAGES = {"positive_rate", "population_share", "positive_capture", "cumulative_positive_capture"}
-_INTEGERS = {"rank", "segment", "count", "positives", "n_trials_completed"}
+_INTEGERS = {"rank", "segment", "bin", "count", "positives", "n_trials_completed"}
 
 
 def _json_default(value: Any) -> Any:
@@ -125,6 +125,11 @@ def _summary(result: "AutoMLResult", class_label: object | None) -> pd.DataFrame
         items.update({"Number of classes": len(result.classes_), "Classes": result.classes_.tolist()})
         if class_label is not None:
             items["Ranking class"] = class_label
+    if result.task is TaskType.BINARY or (result.task is TaskType.MULTICLASS and class_label is not None):
+        summary = result.calibration_summary(n_bins=10, class_label=class_label)
+        items.update({"Brier score": summary["brier_score"],
+                      "Expected calibration error": summary["expected_calibration_error"],
+                      "Max calibration error": summary["max_calibration_error"]})
     return pd.DataFrame(items.items(), columns=["Item", "Value"])
 
 
@@ -168,6 +173,8 @@ def export_excel(
             ("Ranking", result.ranking_table(class_label=class_label), False),
             ("Top Segment", result.top_segment(config.top_fraction, class_label=class_label), True),
         ])
+    if result.task is TaskType.BINARY or (result.task is TaskType.MULTICLASS and class_label is not None):
+        tables.append(("Calibration", result.calibration_table(n_bins=10, class_label=class_label), False))
     if config.include_predictions:
         tables.append(("Predictions", result.test_predictions, True))
     for name, table, include_index in tables:

@@ -1,4 +1,4 @@
-# RationalML — V0.7.0
+# RationalML — V0.8.0
 
 RationalML compare et optimise des modèles de classification binaire,
 multiclass et de régression sur les
@@ -388,6 +388,56 @@ Regression retourne `segment`, `count`, `pred_min`, `pred_max`, `pred_mean`,
 donc l'opposé du résidu moyen. Tous les tableaux contiennent des valeurs brutes,
 sans Styler, formatage ou seuil interprétatif.
 
+## Probability calibration diagnostics
+
+Ces diagnostics utilisent exclusivement les prédictions initiales du **holdout**
+stockées dans le résultat, sans fit, predict, transform, CV ou Optuna. Ils restent
+disponibles même sans modèle et ne modifient ni les probabilités ni la sélection
+du gagnant. **Ils ne recalibrent pas le modèle.**
+
+```python
+calibration = result.calibration_table(n_bins=10)
+summary = result.calibration_summary(n_bins=10)
+
+# Multiclass : one-vs-rest, classe choisie obligatoirement parmi classes_.
+multiclass_result.calibration_table(class_label="gold")
+multiclass_result.calibration_summary(class_label="gold")
+```
+
+Binary utilise `score` et `y_true == result.positive_class`, avec les labels
+originaux ; `class_label` y est interdit. Multiclass utilise `proba_j`, où
+`classes_[j]` est la classe demandée (y compris `class_label=0`). Une classe
+absente/inconnue produit `ConfigurationError`. Regression produit
+`UnsupportedTaskError` pour les deux méthodes.
+
+Le tri des probabilités est **croissant et stable** : calibration bin 1 contient
+les probabilités les plus faibles, tandis que ranking segment 1 contient les
+plus élevées. Avec `effective_bins=min(n_bins, n_rows)`, chaque position indexée à partir de zéro
+reçoit `floor(position * effective_bins / n_rows) + 1`. Les bins sont non vides,
+leurs effectifs diffèrent d'au plus une ligne et les égalités gardent l'ordre du
+holdout. `n_bins` est un entier >= 2, hors bool. Les index dupliqués ou composites
+ne servent jamais d'identifiant unique. Les probabilités doivent être numériques,
+finies et dans [0, 1] ; une valeur invalide produit `DataValidationError`, sans clipping.
+
+Le tableau numérique contient exactement `bin`, `count`, `proba_min`, `proba_max`,
+`proba_mean`, `observed_rate`, `calibration_gap`, `absolute_calibration_gap`,
+`population_share`. **calibration_gap = observed_rate − proba_mean** : un gap
+positif signifie une sous-estimation de la fréquence observée, un gap négatif
+une surestimation. Les objets retournés sont indépendants du résultat.
+
+Le dictionnaire de synthèse contient trois floats :
+
+- `brier_score = mean((y_binary - probability) ** 2)`, dans [0, 1], indépendant
+  du binning. Plus faible signifie un meilleur score probabiliste. Le Brier
+  **n'est pas une mesure pure de calibration** : il dépend aussi de la qualité
+  et de la discrimination des probabilités.
+- `expected_calibration_error` (ECE) = somme des `population_share * absolute_calibration_gap`.
+- `max_calibration_error` (MCE) = maximum des `absolute_calibration_gap`.
+
+ECE et MCE utilisent exactement les bins du tableau demandé et **dépendent du
+nombre de bins**, sans être des constantes intrinsèques du modèle. La V0.8
+retourne uniquement des valeurs numériques et tables, sans graphique.
+
 ## Excel export
 
 L'extra Excel est optionnel ; le cœur s'importe et fonctionne sans openpyxl :
@@ -413,7 +463,12 @@ Les feuilles communes sont **Summary**, **Leaderboard**, **Metrics**,
 **Feature Importance**, **Hyperparameters**. Binary et regression ajoutent
 **Ranking** et **Top Segment**. En multiclass, ces deux feuilles sont présentes
 uniquement si `class_label` est fourni ; sans classe, le reste du rapport est
-exporté normalement. **Predictions** est créée seulement avec
+exporté normalement. **Calibration** est ajoutée en binary, et en multiclass
+uniquement avec `class_label`, avec le diagnostic canonique à **10 bins**.
+Summary ajoute alors les valeurs numériques **Brier score**, **Expected calibration
+error**, **Max calibration error**, au format décimal normal ; regression n'ajoute
+aucun diagnostic de calibration. Aucune option d'ExcelReportConfig n'est ajoutée.
+**Predictions** est créée seulement avec
 `include_predictions=True` (False par défaut), à partir du holdout stocké.
 Top Segment et Predictions conservent l'index dans leur première colonne,
 sans exporter les features d'origine. Les index composites sont représentés
@@ -460,7 +515,7 @@ run_id = result.log_mlflow(
     )
 )
 
-# Multiclass : ranking seulement pour la classe explicitement choisie.
+# Multiclass : ranking et calibration pour la classe explicitement choisie.
 multiclass_result.log_mlflow(
     config=MLflowConfig(experiment_name="segments", log_model=False),
     class_label="gold",
@@ -478,6 +533,12 @@ Les tables sont `leaderboard.json` (modèle en colonne), `cv_results.json`,
 En multiclass, ranking nécessite `class_label` ; une classe invalide est
 rejetée avant création des runs et la classe choisie est tracée dans le
 paramètre parent `ranking_class`. Aucun Top Segment n'est envoyé.
+En binary, `calibration.json` est ajouté avec **10 bins**, ainsi que les métriques
+parent `calibration_brier_score`, `calibration_expected_error` et
+`calibration_max_error`. Multiclass les ajoute uniquement avec `class_label` ;
+regression les omet. Cette table est agrégée, sans index client, cible ou prédiction
+individuelle ni features. Elle peut donc être loggée par défaut ; aucune option
+de MLflowConfig n'est ajoutée et les enfants restent des diagnostics CV.
 `log_predictions=False` par défaut : aucune observation individuelle du
 holdout. L'opt-in ajoute `predictions.json` avec une première colonne d'index
 original, renommée par suffixe si son nom entre en conflit. Les features
@@ -519,7 +580,7 @@ FULL DATA
           ├── choix du modèle et des paramètres par score CV
           └── Pipeline final neuf, fit sur TRAIN complet
                     └── transform et évaluation unique sur TEST
-                          └── prédictions conservées → ranking/top sur demande
+                          └── prédictions conservées → diagnostics/restitution sur demande
 ```
 
 Le holdout ne participe à aucun fit, à Optuna, ni à la sélection des modèles.
@@ -545,6 +606,16 @@ via `MetricRegistry.register(MetricSpec(...))`. Le modèle doit accepter
 random_state, déclarer `n_jobs_parameter` (ou None), supporter predict_proba en classification
 et définir `requires_scaling` pour basic. Aucune modification du moteur n'est
 nécessaire pour l'enregistrer.
+
+## Migration V0.7.0 → V0.8.0
+
+Les API et contrats d'entraînement/inférence restent inchangés. Les deux méthodes
+de calibration sont ajoutées à AutoMLResult sans nouveau champ ni dépendance.
+Les rapports classification concernés ajoutent une feuille Calibration et trois
+lignes Summary ; MLflow ajoute un artefact agrégé et trois métriques parent.
+Adapter les consommateurs qui vérifient une liste exacte de feuilles, artefacts
+ou métriques. `test_metrics` et le leaderboard ne changent pas. Aucune calibration
+réelle du modèle n'est introduite.
 
 ## Migration V0.6.0 → V0.7.0
 
@@ -629,17 +700,24 @@ incorrects et leur contrat métier ambigu. `roc_auc` et `average_precision`
 
 ## Vérification et limites
 
-Vérification V0.7.0 : **689 tests réussis en 249,84 s**, dont **104 nouveaux cas**,
+Vérification V0.8.0 : **807 tests réussis en 260,57 s**, dont **118 nouveaux cas**,
 **2 warnings** (classe positive implicite et dépréciation SQLAlchemy `noload`
 dans le store SQL MLflow),
 **0 échec et 0 skip**. LightGBM et XGBoost sont installés et testés.
-`pip check` retourne `No broken requirements found.` avant puis après installation
-de l'extra MLflow ; les versions API et installation éditable sont `RationalML==0.7.0`.
+`pip check` retourne `No broken requirements found.` avant puis après mise à jour
+de l'installation éditable ; les versions API et installation sont `RationalML==0.8.0`.
 Openpyxl **3.0.10**, version minimale déclarée, est testé par écriture directe.
 MLflow **3.17.0** est testé avec SQLite et des artefacts locaux sous `tmp_path`,
 sans serveur et avec les connexions réseau bloquées dans les tests.
 
-Les 585 cas V0.6 sont conservés sans modification. Les nouveaux tests MLflow
+Les 689 cas V0.7 sont conservés ; seules les attentes Excel/MLflow sont adaptées
+aux nouvelles feuilles et métriques. Les 118 nouveaux cas couvrent les formules
+manuelles Brier/ECE/MCE, le binning, les égalités, les index, les probabilités
+invalides, les labels originaux et le one-vs-rest explicite. Ils bloquent les
+appels ML et vérifient les diagnostics même sans best_model, l'immutabilité,
+l'absence d'effet sur la sélection lorsque seul le holdout change, ainsi que
+les cellules Excel numériques et l'artefact MLflow agrégé confidentiel.
+Les tests MLflow
 relisent les runs, leurs tables et le Pipeline sérialisé ; ils vérifient
 les paramètres par candidat, exactement quatre runs pour trois modèles et
 cinq trials, l'opt-in des prédictions et le choix multiclass. Fit/predict,
@@ -673,5 +751,6 @@ Openpyxl et MLflow restent dans leurs extras respectifs, sans dépendance obliga
 supplémentaire. Aucun feature engineering automatique n'est introduit.
 Datetime automatique, sélection de
 features, outliers, logs, target encoding, encodage haute cardinalité, SHAP,
-optimisation de seuil, calibration, CatBoost, Model Registry/deployment
-et group/time split restent hors V0.7. Aucune fonctionnalité V0.8 n'est ajoutée.
+optimisation de seuil, recalibration du modèle, CatBoost, Model Registry/deployment
+et group/time split restent hors V0.8. Aucune fonctionnalité supplémentaire
+n'est ajoutée.

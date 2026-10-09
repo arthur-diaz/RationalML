@@ -53,6 +53,8 @@ def test_report_common_tables_summary_and_default_sheets(excel_result, tmp_path)
     assert result.to_excel(str(path)) == path
     workbook = openpyxl.load_workbook(path)
     additional = [] if result.task.value == "multiclass" else ["Ranking", "Top Segment"]
+    if result.task.value == "binary":
+        additional.append("Calibration")
     assert workbook.sheetnames == COMMON_SHEETS + additional
     assert_sheet_matches(workbook["Leaderboard"], result.leaderboard.reset_index())
     expected_metrics = pd.DataFrame([(k, v, k == result.primary_metric) for k, v in result.test_metrics.items()],
@@ -103,7 +105,8 @@ def test_predictions_opt_in_preserves_original_index_and_raw_columns(excel_resul
     config = ExcelReportConfig(include_predictions=True, top_fraction=.25)
     label = "gold" if result.task.value == "multiclass" else None
     workbook = openpyxl.load_workbook(result.to_excel(tmp_path / "full.xlsx", config=config, class_label=label))
-    assert workbook.sheetnames == COMMON_SHEETS + ["Ranking", "Top Segment", "Predictions"]
+    calibration = [] if result.task.value == "regression" else ["Calibration"]
+    assert workbook.sheetnames == COMMON_SHEETS + ["Ranking", "Top Segment"] + calibration + ["Predictions"]
     assert_sheet_matches(workbook["Predictions"], result.test_predictions, include_index=True)
     assert_sheet_matches(workbook["Top Segment"], result.top_segment(.25, class_label=label), include_index=True)
     assert_sheet_matches(workbook["Ranking"], result.ranking_table(class_label=label))
@@ -285,7 +288,8 @@ def test_invalid_export_options(excel_result, tmp_path, option):
 def test_excel_row_limits_include_headers_without_truncation(excel_result, monkeypatch, tmp_path):
     import rationalml.reporting.excel as excel
 
-    result = excel_result
+    # Keep Predictions larger than Summary, including its new calibration rows.
+    result = replace(excel_result, _test_predictions=pd.concat([excel_result.test_predictions] * 2))
     # Exactly len(predictions)+1 fits; one fewer available row must fail.
     count = len(result.test_predictions)
     config = ExcelReportConfig(include_predictions=True)

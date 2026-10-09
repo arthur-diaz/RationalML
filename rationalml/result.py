@@ -12,6 +12,7 @@ from sklearn.pipeline import Pipeline
 from .config import AutoMLConfig
 from .data import BinaryLabelEncoder, MulticlassLabelEncoder, validate_features
 from .exceptions import ConfigurationError, DataValidationError, UnsupportedTaskError
+from .evaluation.calibration import calibration_summary, calibration_table
 from .evaluation.ranking import binary_ranking_table, regression_ranking_table, top_segment
 from .preprocessing.schema import FeatureSchema
 from .reporting.config import ExcelReportConfig
@@ -78,6 +79,33 @@ class AutoMLResult:
         """Select the highest stored holdout scores/predictions without model calls."""
         score_column, _ = self._ranking_target(class_label)
         return top_segment(self._test_predictions, fraction=fraction, score_column=score_column)
+
+    def _calibration_target(self, class_label: object | None) -> tuple[str, object]:
+        if self.task is TaskType.REGRESSION:
+            raise UnsupportedTaskError("Probability calibration diagnostics are only available for classification tasks.")
+        if self.task is TaskType.MULTICLASS and class_label is None:
+            raise ConfigurationError("Multiclass calibration requires class_label.")
+        if self.task is TaskType.BINARY and class_label is not None:
+            raise ConfigurationError("class_label is only used for multiclass calibration.")
+        return self._ranking_target(class_label)
+
+    def calibration_table(self, n_bins: int = 10, *, class_label: object | None = None) -> pd.DataFrame:
+        """Diagnose stored holdout probabilities; bin 1 is lowest, gap = observed - predicted.
+
+        Multiclass requires class_label (one-vs-rest); regression is unsupported.
+        No model calls or probability changes are performed.
+        """
+        score_column, positive = self._calibration_target(class_label)
+        return calibration_table(self._test_predictions, positive_class=positive, n_bins=n_bins, score_column=score_column)
+
+    def calibration_summary(self, n_bins: int = 10, *, class_label: object | None = None) -> dict[str, float]:
+        """Stored-holdout Brier, ECE and MCE; ECE/MCE depend on the selected n_bins.
+
+        Brier measures probability quality, not calibration alone. Multiclass
+        requires class_label; regression is unsupported. Never recalibrates.
+        """
+        score_column, positive = self._calibration_target(class_label)
+        return calibration_summary(self._test_predictions, positive_class=positive, n_bins=n_bins, score_column=score_column)
 
     def to_excel(
         self, path: str | Path, *, config: ExcelReportConfig | None = None,

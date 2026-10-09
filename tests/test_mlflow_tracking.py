@@ -109,13 +109,21 @@ def test_parent_content_tables_and_default_privacy(request, local_tracking, task
         expected["n_classes"] = "3"
     assert run.data.params == expected
     best = result.leaderboard.loc[result.best_model_name]
-    assert run.data.metrics == pytest.approx({"baseline_score": result.baseline_score, "best_cv_score": best.cv_score,
-                                              "best_cv_std": best.cv_std, "improvement_vs_baseline": best.improvement_vs_baseline,
-                                              **{f"test_{k}": v for k, v in result.test_metrics.items()}})
+    expected_metrics = {"baseline_score": result.baseline_score, "best_cv_score": best.cv_score,
+                        "best_cv_std": best.cv_std, "improvement_vs_baseline": best.improvement_vs_baseline,
+                        **{f"test_{k}": v for k, v in result.test_metrics.items()}}
+    if task == "binary":
+        calibration = result.calibration_summary()
+        expected_metrics.update(calibration_brier_score=calibration["brier_score"],
+                                calibration_expected_error=calibration["expected_calibration_error"],
+                                calibration_max_error=calibration["max_calibration_error"])
+    assert run.data.metrics == pytest.approx(expected_metrics)
     names = {artifact.path for artifact in client.list_artifacts(run_id)}
     required = {"leaderboard.json", "cv_results.json", "feature_importance.json"}
     if task != "multiclass":
         required.add("ranking.json")
+    if task == "binary":
+        required.add("calibration.json")
     assert names == required
     assert_table_equal(read_table(client, run_id, "leaderboard.json", root), result.leaderboard.reset_index())
     assert_table_equal(read_table(client, run_id, "cv_results.json", root), result.cv_results)
