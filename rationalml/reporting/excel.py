@@ -1,10 +1,12 @@
 """Write result tables to Excel without accessing training data or the model."""
 
 import json
+import os
 from datetime import date, datetime, time
 from decimal import Decimal
 from math import isfinite
 from pathlib import Path
+from tempfile import NamedTemporaryFile
 from typing import TYPE_CHECKING, Any
 
 import numpy as np
@@ -183,5 +185,13 @@ def export_excel(
     workbook.remove(workbook.active)
     for name, table, include_index in tables:
         _write_table(workbook, name, table, config, include_index)
-    workbook.save(path)
+    # Close the temporary handle before openpyxl opens it (required on Windows).
+    with NamedTemporaryFile(dir=path.parent, prefix=f".{path.name}.", suffix=".xlsx", delete=False) as temporary:
+        temporary_path = Path(temporary.name)
+    try:
+        workbook.save(temporary_path)
+        os.replace(temporary_path, path)
+    finally:
+        temporary_path.unlink(missing_ok=True)
+        workbook.close()
     return path

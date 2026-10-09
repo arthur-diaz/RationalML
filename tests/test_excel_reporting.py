@@ -1,4 +1,5 @@
 import json
+from io import BytesIO
 from copy import deepcopy
 from dataclasses import replace
 
@@ -295,7 +296,10 @@ def test_excel_row_limits_include_headers_without_truncation(excel_result, monke
     config = ExcelReportConfig(include_predictions=True)
     path = tmp_path / "limit.xlsx"
     monkeypatch.setattr(excel, "EXCEL_MAX_ROWS", count + 1)
-    workbook = openpyxl.load_workbook(result.to_excel(path, config=config))
+    result.to_excel(path, config=config)
+    # Inspect bytes without retaining openpyxl 3.0's file handles before the
+    # subsequent atomic replacement (Windows forbids replacing locked files).
+    workbook = openpyxl.load_workbook(BytesIO(path.read_bytes()))
     assert workbook["Predictions"].max_row == count + 1
     workbook.close()
     previous = path.read_bytes()

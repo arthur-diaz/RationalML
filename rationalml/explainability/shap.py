@@ -9,7 +9,7 @@ import pandas as pd
 from scipy import sparse
 from sklearn.linear_model import LogisticRegression, Ridge
 
-from ..exceptions import ConfigurationError, DataValidationError, MissingDependencyError
+from ..exceptions import AutoMLError, ConfigurationError, DataValidationError, MissingDependencyError
 from ..tasks import TaskType
 
 if TYPE_CHECKING:
@@ -123,6 +123,8 @@ def explain(
                      shap.TreeExplainer(estimator, data=masker, model_output="raw",
                                         feature_perturbation="interventional", feature_names=list(names)))
         explanation = explainer(transformed)
+    except AutoMLError:
+        raise
     except Exception as error:
         raise ConfigurationError(f"SHAP cannot explain this estimator/transformed-data combination: {error}") from error
     n_classes = len(result.classes_) if result.task is TaskType.MULTICLASS else 0
