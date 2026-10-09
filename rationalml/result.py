@@ -2,7 +2,7 @@
 
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 import numpy as np
 import pandas as pd
@@ -18,6 +18,9 @@ from .preprocessing.schema import FeatureSchema
 from .reporting.config import ExcelReportConfig
 from .tasks import TaskType
 from .tracking.config import MLflowConfig
+
+if TYPE_CHECKING:
+    from shap import Explanation
 
 
 @dataclass
@@ -106,6 +109,19 @@ class AutoMLResult:
         """
         score_column, positive = self._calibration_target(class_label)
         return calibration_summary(self._test_predictions, positive_class=positive, n_bins=n_bins, score_column=score_column)
+
+    def explain(
+        self, X: pd.DataFrame | NDArray[Any], *, background: pd.DataFrame | NDArray[Any],
+        class_label: object | None = None,
+    ) -> "Explanation":
+        """SHAP for one raw output using explicit data/reference and fitted preprocessing.
+
+        Never fits or retains X, background, the explainer or its explanation.
+        Multiclass requires class_label; binary explains positive_class.
+        """
+        from .explainability.shap import explain
+
+        return explain(self, X, background=background, class_label=class_label)
 
     def to_excel(
         self, path: str | Path, *, config: ExcelReportConfig | None = None,
