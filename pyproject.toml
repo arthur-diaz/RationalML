@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "RationalML"
-version = "0.6.0"
+version = "0.7.0"
 description = "Optuna model comparison for prepared classification and regression data with optional leakage-safe preprocessing"
 readme = "README.md"
 requires-python = ">=3.10"
@@ -20,6 +20,7 @@ dependencies = [
 boosting = ["lightgbm>=4,<5", "xgboost>=2,<4"]
 legacy = ["tqdm>=4"]
 excel = ["openpyxl>=3.0.10,<4"]
+mlflow = ["mlflow>=3.1,<4"]
 test = ["pytest>=8,<10"]
 
 [tool.setuptools]

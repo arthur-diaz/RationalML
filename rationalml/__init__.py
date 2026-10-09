@@ -8,11 +8,13 @@ from .preprocessing import PreprocessingConfig, FeatureSchema, infer_schema, bui
 from .result import AutoMLResult
 from .reporting import ExcelReportConfig
 from .tasks import TaskType, normalize_task
+from .tracking import MLflowConfig
 
 __all__ = [
     "AutoML", "AutoMLConfig", "AutoMLResult", "TaskType", "normalize_task",
     "MetricRegistry", "MetricSpec", "ModelRegistry", "ModelSpec",
     "PreprocessingConfig", "FeatureSchema", "infer_schema", "build_preprocessor",
     "ExcelReportConfig",
+    "MLflowConfig",
 ]
-__version__ = "0.6.0"
+__version__ = "0.7.0"
