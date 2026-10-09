@@ -1,4 +1,4 @@
-# RationalML — V0.8.0
+# RationalML — V0.9.0
 
 RationalML compare et optimise des modèles de classification binaire,
 multiclass et de régression sur les
@@ -566,6 +566,85 @@ changer l'expérience active de l'utilisateur. Un échec du backend remonte.
 MLflow est importé uniquement à la demande ; s'il manque, `MissingDependencyError`
 indique l'installation de l'extra `mlflow` (`mlflow>=3.1,<4`).
 
+## SHAP explainability
+
+SHAP est optionnel et importé uniquement lors de `result.explain(...)` :
+
+```shell
+pip install "rationalml[shap]"
+# SHAP >=0.49.1,<0.50 ; RationalML conserve Python >=3.10.
+```
+
+```python
+import shap
+
+# Le Data Scientist choisit les observations et la distribution de référence.
+background = X_reference.iloc[:100]
+explanation = result.explain(X_clients, background=background)
+
+shap.plots.bar(explanation)
+shap.plots.waterfall(explanation[0])
+
+# Multiclass : une seule classe métier, class_label obligatoire (0 accepté).
+explanation = multiclass_result.explain(
+    X_clients, background=background, class_label="gold",
+)
+```
+
+`explain(X, *, background, class_label=None)` retourne une **shap.Explanation**
+avec `values.shape == (n_samples, n_transformed_features)` et une base par ligne.
+Binary explique la classe interne **1**, donc `result.positive_class`, y compris
+avec labels strings/bool ou `positive_class=0`. Multiclass sélectionne exactement
+`classes_[j]` et refuse une classe absente/inconnue. Regression explique la
+prédiction numérique. `class_label` est interdit hors multiclass.
+
+**X et background sont obligatoirement fournis par l'utilisateur.** Les colonnes
+sont validées/réordonnées comme pour predict ; ndarray suit le même contrat.
+Un background de 50 à 200 observations représentatives est souvent pratique,
+mais aucune taille n'est imposée et **aucun échantillonnage n'est effectué**,
+y compris au-delà des 100 lignes par défaut du masker SHAP. Le background définit
+la distribution de référence ; aucune donnée du fit ou de test_predictions
+n'est récupérée. AutoMLResult ne conserve ni données fournies, ni explainer,
+ni explication ou SHAP values. AutoML.fit n'importe et ne calcule jamais SHAP.
+
+Le preprocessing None transmet les features préparées ; basic et custom utilisent
+uniquement **transform avec les objets fitted du Pipeline**, sans fit, fit_transform,
+clone ou nouvelles statistiques. L'estimateur est expliqué dans l'espace transformé :
+**LinearExplainer** pour LogisticRegression/Ridge ; **TreeExplainer** pour
+LightGBM/XGBoost, avec background explicite, `model_output="raw"` et
+`feature_perturbation="interventional"`. Aucun Kernel/Permutation/DeepExplainer
+ni fallback automatique n'est utilisé pour un modèle non pris en charge.
+
+**base_value + somme(SHAP values) ≈ sortie brute du modèle.** En classification,
+cela signifie marge/decision score (log-odds pour la logistique binaire), sans
+unité « points de probabilité ». Regression utilise la prédiction numérique.
+Les noms viennent de transformed_feature_names, ou des noms d'origine sans
+preprocessing. Les colonnes OHE restent distinctes, sans agrégation vers leur
+source. Un custom sans noms fiables utilise `feature_0`, `feature_1`… avec
+UserWarning explicite. `Explanation.data` contient les valeurs transformées
+réellement reçues par l'estimateur.
+
+Les sorties sparse sont conservées en **CSR pour LinearExplainer** ; les valeurs
+SHAP sont numériques denses, mais la matrice d'entrée n'est pas densifiée par
+RationalML. TreeExplainer interventional exige ici des matrices transformées
+denses : une combinaison sparse est rejetée explicitement, sans conversion
+automatique. Les plots SHAP restent à la charge de l'utilisateur.
+
+**Compatibilité XGBoost :** SHAP 0.49.1 ne lit pas les intercepts vectoriels de
+XGBoost >=3.1. Cette combinaison lève ConfigurationError pour explain, tout en
+conservant le support entraînement/inférence existant. Pour cette intégration,
+utiliser XGBoost >=2,<3.1 ; les tests d'additivité utilisent **3.0.5** dans une
+installation isolée. La contrainte boosting du projet reste inchangée. Le
+[correctif SHAP est introduit en 0.50](https://github.com/shap/shap/releases/tag/v0.50.0),
+qui abandonne Python 3.10 ; RationalML conserve donc la série 0.49.x demandée.
+
+`feature_importance` garde ses coefficients/importances natives rapides ; explain
+calcule des contributions SHAP sur les observations explicitement choisies.
+**SHAP explique la prédiction du modèle, sans démontrer une relation causale.**
+Aucun plot RationalML, envoi automatique vers Excel/MLflow ou stockage SHAP
+n'est ajouté. Une dépendance absente produit MissingDependencyError avec la
+commande d'installation de l'extra.
+
 ## Protocole et responsabilités
 
 ```text
@@ -606,6 +685,15 @@ via `MetricRegistry.register(MetricSpec(...))`. Le modèle doit accepter
 random_state, déclarer `n_jobs_parameter` (ou None), supporter predict_proba en classification
 et définir `requires_scaling` pour basic. Aucune modification du moteur n'est
 nécessaire pour l'enregistrer.
+
+## Migration V0.8.0 → V0.9.0
+
+`explain` et l'extra optionnel shap sont ajoutés sans modifier les champs du
+résultat, l'entraînement, l'inférence ou les exports. Aucune nouvelle dépendance
+obligatoire. Les modèles sans explainer pris en charge et les combinaisons
+TreeExplainer/sparse sont rejetés explicitement. L'incompatibilité entre
+SHAP 0.49.x et les intercepts XGBoost >=3.1 concerne uniquement explain ; les
+versions XGBoost installées et les API existantes restent conservées.
 
 ## Migration V0.7.0 → V0.8.0
 
@@ -700,18 +788,33 @@ incorrects et leur contrat métier ambigu. `roc_auc` et `average_precision`
 
 ## Vérification et limites
 
-Vérification V0.8.0 : **807 tests réussis en 260,57 s**, dont **118 nouveaux cas**,
+Vérification V0.9.0 : **1005 tests réussis en 307,18 s**, dont **198 nouveaux cas**,
 **2 warnings** (classe positive implicite et dépréciation SQLAlchemy `noload`
 dans le store SQL MLflow),
 **0 échec et 0 skip**. LightGBM et XGBoost sont installés et testés.
 `pip check` retourne `No broken requirements found.` avant puis après mise à jour
-de l'installation éditable ; les versions API et installation sont `RationalML==0.8.0`.
+de l'installation éditable ; les versions API et installation sont `RationalML==0.9.0`.
 Openpyxl **3.0.10**, version minimale déclarée, est testé par écriture directe.
 MLflow **3.17.0** est testé avec SQLite et des artefacts locaux sous `tmp_path`,
 sans serveur et avec les connexions réseau bloquées dans les tests.
 
-Les 689 cas V0.7 sont conservés ; seules les attentes Excel/MLflow sont adaptées
-aux nouvelles feuilles et métriques. Les 118 nouveaux cas couvrent les formules
+Les **807 cas V0.8 sont conservés sans modification**. Les nouveaux cas SHAP
+utilisent **SHAP 0.49.1** avec Python **3.12.6**, LogisticRegression, Ridge,
+LightGBM **4.7.0** et XGBoost **3.4.1**. Cette dernière combinaison vérifie
+l'erreur de compatibilité explicite. Une installation isolée **XGBoost 3.0.5**
+exécute en plus **29 cas XGBoost réussis en 5,03 s**, couvrant les trois tâches,
+les trois modes preprocessing, les classes originales et l'additivité raw.
+L'installation principale reste en XGBoost 3.4.1.
+
+Les tests SHAP bloquent tous les fit/fit_transform, Optuna, reconstruction de
+pipeline et exports. Ils comparent les modèles sérialisés avant/après, les
+résultats et données d'entrée, et vérifient le background intégral de 137 lignes,
+l'import lazy, le fonctionnement de fit sans SHAP, les erreurs de colonnes/types,
+les index, les noms custom, les formes de sorties et le chemin sparse linéaire.
+Aucune nouvelle donnée ou explication n'est conservée dans le résultat.
+La matrice Python 3.10 + SHAP 0.49.1 n'a pas été exécutée dans cet environnement.
+
+Les tests de calibration couvrent les formules
 manuelles Brier/ECE/MCE, le binning, les égalités, les index, les probabilités
 invalides, les labels originaux et le one-vs-rest explicite. Ils bloquent les
 appels ML et vérifient les diagnostics même sans best_model, l'immutabilité,
@@ -750,7 +853,7 @@ restent une erreur ; les constantes basic peuvent avertir par fold/essai.
 Openpyxl et MLflow restent dans leurs extras respectifs, sans dépendance obligatoire
 supplémentaire. Aucun feature engineering automatique n'est introduit.
 Datetime automatique, sélection de
-features, outliers, logs, target encoding, encodage haute cardinalité, SHAP,
+features, outliers, logs, target encoding, encodage haute cardinalité,
 optimisation de seuil, recalibration du modèle, CatBoost, Model Registry/deployment
-et group/time split restent hors V0.8. Aucune fonctionnalité supplémentaire
+et group/time split restent hors V0.9. Aucune fonctionnalité V0.10
 n'est ajoutée.
