@@ -2,7 +2,8 @@ import numpy as np
 import pandas as pd
 import pytest
 
-from rationalml import AutoML, AutoMLConfig, FeatureSchema, PreprocessingConfig, infer_schema
+from rationalml import AutoML, AutoMLConfig, PreprocessingConfig
+from rationalml.preprocessing import FeatureSchema, infer_schema
 from rationalml.data import validate_features
 from rationalml.exceptions import ConfigurationError, DataValidationError
 

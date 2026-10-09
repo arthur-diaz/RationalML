@@ -38,18 +38,30 @@ def test_public_call_signatures(api, expected):
 
 
 def test_root_exports_are_the_intended_public_api():
-    expected = {"AutoML", "AutoMLConfig", "AutoMLResult", "TaskType", "normalize_task", "ModelRegistry",
-                "ModelSpec", "MetricRegistry", "MetricSpec", "PreprocessingConfig", "FeatureSchema",
-                "infer_schema", "build_preprocessor", "ExcelReportConfig", "MLflowConfig"}
+    expected = {"AutoML", "AutoMLConfig", "AutoMLResult", "TaskType", "ModelRegistry",
+                "ModelSpec", "MetricRegistry", "MetricSpec", "PreprocessingConfig",
+                "ExcelReportConfig", "MLflowConfig"}
     assert set(rationalml.__all__) == expected
     assert len(rationalml.__all__) == len(expected)
     assert all(hasattr(rationalml, name) for name in expected)
 
 
+@pytest.mark.parametrize("removed, module", [
+    ("normalize_task", "rationalml.tasks"), ("FeatureSchema", "rationalml.preprocessing"),
+    ("infer_schema", "rationalml.preprocessing"), ("build_preprocessor", "rationalml.preprocessing"),
+])
+def test_advanced_helpers_live_only_in_their_submodules(removed, module):
+    from importlib import import_module
+
+    assert removed not in rationalml.__all__
+    assert not hasattr(rationalml, removed)
+    assert callable(getattr(import_module(module), removed))
+
+
 def test_source_and_package_versions_agree():
     source = (Path(__file__).resolve().parents[1] / "pyproject.toml").read_text(encoding="utf-8")
     # stdlib tomllib is unavailable on Python 3.10; the project version is a literal.
-    assert re.search(r'^version = "([^"]+)"$', source, re.MULTILINE).group(1) == rationalml.__version__ == "0.10.0"
+    assert re.search(r'^version = "([^"]+)"$', source, re.MULTILINE).group(1) == rationalml.__version__
 
 
 def test_import_root_does_not_load_any_optional_runtime():

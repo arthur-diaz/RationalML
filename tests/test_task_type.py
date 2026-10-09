@@ -1,9 +1,9 @@
 import pandas as pd
 import pytest
 
-from rationalml import TaskType, normalize_task
+from rationalml import TaskType
 from rationalml.exceptions import DataValidationError, UnsupportedTaskError
-from rationalml.tasks import resolve_task
+from rationalml.tasks import normalize_task, resolve_task
 
 
 @pytest.mark.parametrize("name, expected", [

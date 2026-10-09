@@ -8,7 +8,8 @@ from sklearn.impute import SimpleImputer
 from sklearn.metrics import f1_score, precision_score, recall_score
 from sklearn.pipeline import Pipeline
 
-from rationalml import AutoML, ModelRegistry, PreprocessingConfig, build_preprocessor, infer_schema
+from rationalml import AutoML, ModelRegistry, PreprocessingConfig
+from rationalml.preprocessing import build_preprocessor, infer_schema
 from rationalml.exceptions import DataValidationError
 
 
