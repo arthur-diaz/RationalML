@@ -1,4 +1,4 @@
-# RationalML — V0.10.0
+# RationalML — V1.0.0
 
 RationalML compare et optimise des modèles de classification binaire,
 multiclass et de régression sur les
@@ -11,21 +11,21 @@ le feature engineering et les transformations métier. RationalML prend en
 charge le split train/test, la cross-validation, Optuna, la comparaison des
 modèles, les métriques et les résultats.
 
+**License: Apache-2.0.** RationalML is distributed under the Apache License 2.0.
+
 | `preprocessing` | Contrat |
 | --- | --- |
 | `None` **(défaut)** | Contrôle total du Data Scientist : aucune transformation des features |
 | `"basic"` | Commodité minimale : imputation, OneHotEncoding et scaling selon le modèle |
 | Transformer sklearn | Preprocessing utilisateur, cloné et ajusté à l'intérieur de chaque fold CV |
 
-## Installation et utilisation principale
+## Démarrer en une minute
 
-Python 3.10 ou plus, depuis ce dossier :
+Python 3.10 ou plus. Pour travailler depuis le dépôt :
 
-```powershell
-python -m venv .venv
-.\.venv\Scripts\python.exe -m pip install -e ".[test,boosting,excel,mlflow,shap]"
-.\.venv\Scripts\python.exe -m pytest -q -p no:cacheprovider
-.\.venv\Scripts\python.exe -m pip check
+```sh
+python -m pip install -e .
+python examples/quickstart.py
 ```
 
 Le cœur requiert numpy, pandas, scikit-learn, Optuna et threadpoolctl. LightGBM
@@ -36,21 +36,46 @@ L'extra `legacy` fournit tqdm pour `local_optimizer`. Les modèles sont filtrés
 par tâche : les régresseurs ne sont jamais proposés à une classification.
 
 ```python
+import pandas as pd
+from sklearn.datasets import make_classification
 from rationalml import AutoML
 
-# df_model : features déjà préparées par le Data Scientist, cible churn 0/1.
+# Données locales, sans téléchargement ; features déjà prêtes pour le modèle.
+X, y = make_classification(
+    n_samples=80, n_features=4, n_informative=3,
+    n_redundant=0, random_state=7,
+)
+df_model = pd.DataFrame(X, columns=[f"feature_{i}" for i in range(4)])
+df_model["target"] = y
 result = AutoML(
-    target="churn",
+    target="target",
     positive_class=1,
     preprocessing=None,  # défaut
-    models="auto",
+    models=["logistic_regression"],  # modèle core, aucun extra requis
     metric="roc_auc",
+    cv=2, n_trials=1, random_state=42, verbose=0,
 ).fit(df_model)
 
+print(result.leaderboard)
+print(result.test_metrics)
+new_df_model = df_model.drop(columns="target").head()
 predictions = result.predict(new_df_model)
 probabilities = result.predict_proba(new_df_model)
-p_churn = result.predict_positive_proba(new_df_model)
+p_positive = result.predict_positive_proba(new_df_model)
 ```
+
+Puis, sans réentraîner ni rappeler le modèle :
+
+```python
+result.ranking_table()
+result.calibration_summary()
+```
+
+Le core ne demande aucun des cinq extras d'exécution. Installer uniquement
+ceux nécessaires : `pip install -e ".[boosting]"`, `".[excel]"`, `".[mlflow]"`
+ou `".[shap]"`. Les exemples de ces fonctions sont présentés séparément plus bas.
+La version publiée pourra s'installer avec `pip install RationalML` **après
+publication** ; cette préparation n'effectue aucune publication.
 
 Les autres tâches utilisent également un DataFrame préparé, sans preprocessing
 par défaut :
@@ -712,15 +737,92 @@ versions, plateformes ou niveaux de parallélisme. Un timeout peut aussi
 changer le nombre de trials terminés. Le roundtrip pickle des pipelines
 built-in est testé dans une même version, sans garantie inter-version.
 
-## API publique avant V1
+## Contrat public V1 et stabilité
 
-RationalML reste en **0.x** : la stabilité sémantique complète de V1 n'est
-pas encore promise. Les contrats publics destinés à être stabilisés sont
-`AutoML` / `AutoMLConfig`, `fit`, les prédictions d'`AutoMLResult`, ses
-tables ranking/calibration, `to_excel`, `log_mlflow` et `explain`, ainsi que
-les registries/specs et les configurations optionnelles exportées dans
-`rationalml.__all__`. Leurs signatures principales sont verrouillées par
-les tests V0.10. Les helpers internes restent privés.
+La V1 stabilise exactement **11 exports racine** de `rationalml.__all__` :
+
+| Groupe | Exports |
+| --- | --- |
+| Core | AutoML, AutoMLConfig, AutoMLResult, TaskType |
+| Extension | ModelRegistry, ModelSpec, MetricRegistry, MetricSpec |
+| Configuration | PreprocessingConfig, ExcelReportConfig, MLflowConfig |
+
+Les helpers avancés restent accessibles depuis leurs sous-modules :
+
+```python
+from rationalml.tasks import normalize_task
+from rationalml.preprocessing import FeatureSchema, infer_schema, build_preprocessor
+```
+
+Ils ne font pas partie du contrat SemVer stable de l'API racine. Leurs objets
+et comportements restent conservés ; `AutoMLResult.feature_schema` peut
+toujours contenir un `FeatureSchema` en mode basic.
+
+Les signatures de
+`AutoML`, `fit`, `predict`, `predict_proba`, `predict_positive_proba`,
+`ranking_table`, `top_segment`, `calibration_table`, `calibration_summary`,
+`to_excel`, `log_mlflow` et `explain` restent celles de V0.10.
+
+Les attributs publics du résultat sont ceux documentés ici : `task`, `target`,
+`config`, `primary_metric`, `leaderboard`, `cv_results`, `best_model`,
+`best_model_name`, `best_params`, `model_best_params`, `metrics`, `test_metrics`,
+`feature_importance`, `feature_names`, `feature_schema`,
+`transformed_feature_names`, `train_indices`, `test_indices`, `test_predictions`,
+`baseline_name`, `baseline_score`, `baseline_cv_std`, `baseline_fold_scores`,
+`classes_`, `positive_class`, `negative_class` (ces trois derniers respectent
+leurs restrictions de tâche). Le constructeur dataclass du résultat, son
+encodeur et ses champs privés ne constituent pas un contrat de construction
+ou de sérialisation. `best_model` est un Pipeline sklearn fitted complet,
+directement utilisable ; ses détails `named_steps` ne sont pas une API stable
+de RationalML. Pour restaurer les labels originaux et contrôler les colonnes,
+utiliser les méthodes du résultat.
+
+Les noms **et l'ordre** des colonnes ci-dessous sont stables :
+
+| Tableau | Colonnes dans l'ordre |
+| --- | --- |
+| leaderboard, index nommé `model` | rank, cv_score, cv_std, cv_min, cv_max, improvement_vs_baseline, n_trials_completed |
+| cv_results | model, trial, value, fold_0 … fold_(cv-1) |
+| test_predictions binary | y_true, y_pred, score |
+| test_predictions multiclass | y_true, y_pred, proba_0 … proba_(n_classes-1) |
+| test_predictions regression | y_true, y_pred, residual |
+| importance native binary/regression et arbres multiclass | feature, importance, source_feature |
+| importance LogisticRegression multiclass | feature, class, importance, source_feature |
+| ranking classification | segment, count, score_min, score_max, score_mean, positives, positive_rate, population_share, positive_capture, cumulative_positive_capture, lift, cumulative_lift |
+| ranking regression | segment, count, pred_min, pred_max, pred_mean, actual_mean, bias, mae, rmse |
+| calibration classification | bin, count, proba_min, proba_max, proba_mean, observed_rate, calibration_gap, absolute_calibration_gap, population_share |
+
+Le leaderboard est trié par score CV ; les égalités conservent l'ordre des
+modèles demandé. `cv_results` suit l'ordre demandé puis les essais terminés.
+La baseline reste hors leaderboard et hors sélection. Les diagnostics test
+ne déterminent jamais le gagnant. `test_predictions` conserve l'index original
+du holdout, renvoie une copie et ne contient aucune feature brute.
+Une importance indisponible reste un tableau vide à trois colonnes avec warning.
+
+Politique SemVer : patch = correction compatible ; minor = ajout compatible ;
+major = changement incompatible du contrat public. Une suppression publique
+sera normalement précédée d'une dépréciation documentée et d'un warning,
+puis effectuée dans une version majeure. Les modules non documentés et les
+helpers préfixés `_` sont privés. Les structures internes Optuna, attributs
+privés sklearn et formats pickle entre versions ne sont pas garantis.
+
+Les erreurs documentées de `rationalml.exceptions` dérivent d'`AutoMLError` :
+`ConfigurationError`, `DataValidationError`, `UnsupportedTaskError`,
+`MissingDependencyError`, `OptimizationError` et `LegacyAPIError`.
+Le type et la signification sont stables ; le texte complet peut évoluer.
+Les tests vérifient le type et un fragment utile du message.
+
+## Migration V0.10.0 → V1.0.0
+
+Aucune signature ni logique ML ne change. La version provient désormais des
+métadonnées installées, avec `pyproject.toml` comme source unique : installer
+le package, y compris en editable pour développer. Les six modules historiques
+restent distribués volontairement. Les tests de schémas, le quickstart et les
+audits wheel/sdist fixent les contrats déjà existants. Les quatre helpers
+`normalize_task`, `FeatureSchema`, `infer_schema`, `build_preprocessor` quittent
+la racine avant la première publication stable : adapter leurs imports vers
+les sous-modules ci-dessus. Les tests adaptent ces imports, la liste des exports,
+les attentes de version et le contrat de licence Apache-2.0.
 
 ## Migration V0.9.0 → V0.10.0
 
@@ -815,7 +917,11 @@ et les trois modes preprocessing gardent leurs contrats V0.3.
 ## Compatibilité legacy
 
 Le package s'importe avec `from rationalml import AutoML`. Les six modules
-historiques restent binaires et séparés du cœur. `local_optimizer` → `sco_mod` et
+historiques `strategy`, `sco_mod`, `scoring`, `report`, `metrics`, `second_step`
+restent distribués parce que leur compatibilité est annoncée et testée.
+Ils sont **legacy, hors contrat stable V1**, binaires et séparés du cœur.
+Leur retrait futur exigera une migration annoncée ; les chemins dangereux
+restent désactivés. `local_optimizer` → `sco_mod` et
 `second_step` utilisent des DataFrames numériques/booléens sans preprocessing
 automatique. Leurs résultats sont des DataFrames bruts ; les AutoMLResult
 sont disponibles dans `init_model.results_` / `result_`.
@@ -832,10 +938,21 @@ sortie contient cv_std. Les anciens helpers `scoring.objective` et ceux de
 incorrects et leur contrat métier ambigu. `roc_auc` et `average_precision`
 évaluent les courbes globales sans prétendre remplacer ces aires partielles.
 
+## Données conservées et confidentialité
+
+`test_predictions` contient les labels réels et les prédictions du holdout ;
+le résultat occupe donc une mémoire proportionnelle au nombre de lignes et de
+classes. Excel et MLflow exportent les prédictions individuelles seulement sur
+opt-in. La calibration est agrégée ; elle n'ajuste jamais les probabilités.
+SHAP reçoit uniquement les X et background fournis explicitement. Il n'y a
+aucun autologging, envoi automatique de données ou promesse juridique de conformité.
+
 ## Vérification et limites
 
-La V0.10 conserve les 1005 cas V0.9 et ajoute **128 cas** (24 fonctions de test
-avec paramétrisation). Les nouveaux tests couvrent :
+La V1 conserve les **1133 cas V0.10** et ajoute **117 cas** (25 fonctions de test
+avec paramétrisation). Les nouvelles validations verrouillent les schémas,
+les classes à travers toutes les sorties, le quickstart et les garde-fous des
+distributions/releases. Les tests existants continuent de couvrir :
 
 - holdout features/targets modifiés avec split explicitement fixé, deux candidats,
   trois tâches et trois modes preprocessing ;
@@ -848,21 +965,25 @@ avec paramétrisation). Les nouveaux tests couvrent :
 - signatures publiques, exports racine, versions, metadata et import sans extras ;
 - échecs de sauvegarde/remplacement Excel et transparence des exceptions SHAP.
 
-La CI [.github/workflows/ci.yml](.github/workflows/ci.yml) comprend le core sans
+La CI `.github/workflows/ci.yml` comprend le core sans
 extras sous Python 3.10/3.11/3.12, la suite complète avec extras sous 3.12,
 les minima SHAP/XGBoost, MLflow et Excel, puis le build sdist/wheel. Chaque
-job vérifie pip check. Le smoke test [tools/check_wheel.py](tools/check_wheel.py)
+job vérifie pip check. Le smoke test `tools/check_wheel.py`
 réinstalle le wheel core dans un nouveau venv, importe hors du dépôt avec -I,
-vérifie la version installée et l'absence des cinq dépendances optionnelles.
-Le sdist inclut également les fixtures/helpers nécessaires aux tests.
+vérifie la version installée, les exports et l'absence des cinq dépendances
+optionnelles, puis exécute réellement le quickstart. L'installation utilise
+`--no-index` et un wheelhouse préparé séparément. `tools/check_sdist.py`
+reconstruit un wheel hors dépôt, sans réseau, depuis le sdist extrait et
+compare les sources et métadonnées. Le sdist inclut tous les tests et helpers,
+les exemples et documents de release, sans `.github` ni caches/données.
 
-Validations locales Windows :
+Validations locales Windows V1 :
 
 | Environnement | Tests réussis | Warnings | Skips |
 | --- | ---: | ---: | ---: |
-| Tous les extras, Python 3.12.6 | 1133 | 2 | 0 |
-| Core sans extras, Python 3.10.19 | 748 | 10 | 72 |
-| SHAP 0.49.1 + XGBoost 3.0.5, Python 3.10.19 | 207 | 7 | 0 |
+| Tous les extras, Python 3.12.6 | 1250 | 2 | 0 |
+| Core sans extras, Python 3.10.19 | 847 | 10 | 90 |
+| SHAP 0.49.1 + XGBoost 3.0.5, Python 3.10.19 | 211 | 7 | 0 |
 | MLflow 3.1.4 + SQLAlchemy 2.0.54, Python 3.12.6 | 110 | 28 | 0 |
 | Openpyxl 3.0.10, Python 3.12.6 | 128 | 0 | 0 |
 
@@ -871,7 +992,7 @@ extras absents. Les warnings sont conservés : classe positive implicite ;
 SettingWithCopyWarning dans les anciens transformers de test qui écrivent
 volontairement sur leurs entrées (pandas 2) ; dépréciations internes MLflow
 (noload SQLAlchemy 2.1, utcnow, Pydantic et Query.get). Aucun filtre global de
-warnings n'est ajouté. La suite complète passe en 331,47 secondes, sans échec.
+warnings n'est ajouté. La suite complète passe en 324,70 secondes, sans échec.
 
 **Compatibilité constatée :** MLflow 3.1.4 importe
 FallbackAsyncAdaptedQueuePool, supprimé en SQLAlchemy 2.1. Le job minimum
@@ -886,5 +1007,19 @@ Les jobs GitHub Actions sont configurés ; Python 3.11 n'est pas exécuté local
 La mémoire du OneHot dense basic reste à surveiller. Les colonnes entièrement
 manquantes dans un fold basic restent une erreur ; les constantes peuvent
 avertir par fold/essai. Aucun preprocessing, modèle, métrique, explainer,
-export ou API de persistence supplémentaire n'est ajouté en V0.10.
-Aucune fonctionnalité V1.0 n'est développée.
+export ou API de persistence supplémentaire n'est ajouté en V1. Le protocole
+ML de V0.10 reste inchangé : split d'abord, folds partagés sur train uniquement,
+preprocessing neuf par fold, choix CV, refit sur train complet et évaluation
+unique du gagnant sur test.
+
+## Préparation de publication
+
+**License: Apache-2.0.** `LICENSE` contient le texte officiel intégral.
+Le backend `setuptools>=77.0.3` génère les métadonnées SPDX ; le workflow
+`release.yml` exige `License-Expression: Apache-2.0` et un unique `License-File: LICENSE`.
+Le dépôt officiel [RationalML](https://github.com/arthur-diaz/RationalML) est
+actuellement privé : accès public aux liens à vérifier avant publication.
+Le nom PyPI et le Trusted Publisher restent à vérifier/configurer par le
+mainteneur. `RELEASE.md` décrit la checklist locale et les paramètres distants ;
+`CHANGELOG.md` retrace les versions à partir de l'historique réel.
+Aucune publication, création de tag ni push n'est effectué par cette préparation.

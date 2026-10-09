@@ -4,7 +4,13 @@ from rationalml import __version__
 
 
 def test_installed_distribution_version_matches_public_version():
-    assert metadata.version("RationalML") == __version__ == "0.10.0"
+    assert metadata.version("RationalML") == __version__
+
+
+def test_installed_distribution_has_the_selected_apache_license():
+    installed = metadata.metadata("RationalML")
+    assert installed.get_all("License-Expression") == ["Apache-2.0"]
+    assert installed.get_all("License-File") == ["LICENSE"]
 
 
 def test_distribution_keeps_optional_integrations_in_extras():
