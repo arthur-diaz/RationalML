@@ -101,6 +101,13 @@ def log_result(
     if result.task is not TaskType.MULTICLASS or class_label is not None:
         # Validate class selection and ranking before creating any backend run.
         tables["ranking.json"] = result.ranking_table(class_label=class_label)
+    calibration_metrics = {}
+    if result.task is TaskType.BINARY or (result.task is TaskType.MULTICLASS and class_label is not None):
+        tables["calibration.json"] = result.calibration_table(n_bins=10, class_label=class_label)
+        summary = result.calibration_summary(n_bins=10, class_label=class_label)
+        calibration_metrics = {"calibration_brier_score": summary["brier_score"],
+                               "calibration_expected_error": summary["expected_calibration_error"],
+                               "calibration_max_error": summary["max_calibration_error"]}
     if config.log_predictions:
         tables["predictions.json"] = _prediction_table(result)
     parent_params = _parent_params(result, class_label)
@@ -119,7 +126,7 @@ def log_result(
     best = result.leaderboard.loc[result.best_model_name]
     metrics = {"baseline_score": result.baseline_score, "best_cv_score": best["cv_score"],
                "best_cv_std": best["cv_std"], "improvement_vs_baseline": best["improvement_vs_baseline"],
-               **{f"test_{name}": value for name, value in result.test_metrics.items()}}
+               **{f"test_{name}": value for name, value in result.test_metrics.items()}, **calibration_metrics}
     from .. import __version__
 
     tags = {**(config.tags or {}), "rationalml.version": __version__, "rationalml.task": result.task.value,
