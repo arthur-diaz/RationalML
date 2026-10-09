@@ -1,4 +1,4 @@
-"""Search spaces adapted from strategy.py/scoring.py, with legacy bounds preserved."""
+"""Modern model spaces, with explicit historical domains kept for legacy callers."""
 
 from copy import deepcopy
 from typing import Any
@@ -21,6 +21,14 @@ _LGB_BOUNDS = {
 _LR_BOUNDS = {
     "tol": (1e-4, 0.4), "C": (1e-8, 1e9), "max_iter": (100, 300),
     "l1_ratio": (0, 1), "penalty": ["l2", None],
+}
+_LGB_DEFAULT_BOUNDS = {
+    "max_depth": (2, 12), "num_leaves": (4, 128),
+    "learning_rate": (0.01, 0.2),
+    "reg_alpha": (1e-8, 10.0), "reg_lambda": (1e-8, 10.0),
+    "min_split_gain": (0.0, 0.1), "min_child_samples": (5, 50),
+    "colsample_bytree": (0.5, 1.0), "subsample": (0.6, 1.0),
+    "subsample_freq": (1, 5),
 }
 
 
@@ -58,7 +66,25 @@ def suggest_xgboost(trial: Trial, bounds: dict[str, Any] | None = None) -> dict[
 
 
 def suggest_lightgbm(trial: Trial, bounds: dict[str, Any] | None = None) -> dict[str, Any]:
-    p = bounds if bounds is not None else _LGB_BOUNDS
+    if bounds is None:
+        p = _LGB_DEFAULT_BOUNDS
+        depth = trial.suggest_int("max_depth", *p["max_depth"])
+        return {
+            "max_depth": depth,
+            # Leaves cannot exceed the depth's structural capacity. A log
+            # distribution includes compact trees without concentrating near 128.
+            "num_leaves": trial.suggest_int("num_leaves", p["num_leaves"][0],
+                                            min(p["num_leaves"][1], 2**depth), log=True),
+            "learning_rate": trial.suggest_float("learning_rate", *p["learning_rate"], log=True),
+            "reg_alpha": trial.suggest_float("reg_alpha", *p["reg_alpha"], log=True),
+            "reg_lambda": trial.suggest_float("reg_lambda", *p["reg_lambda"], log=True),
+            "min_split_gain": trial.suggest_float("min_split_gain", *p["min_split_gain"]),
+            "min_child_samples": trial.suggest_int("min_child_samples", *p["min_child_samples"]),
+            "colsample_bytree": trial.suggest_float("colsample_bytree", *p["colsample_bytree"]),
+            "subsample": trial.suggest_float("subsample", *p["subsample"]),
+            "subsample_freq": trial.suggest_int("subsample_freq", *p["subsample_freq"]),
+        }
+    p = bounds  # Explicit historical/custom bounds retain their original sampling.
     return {
         name: (
             trial.suggest_int(name, *p[name]) if name in {

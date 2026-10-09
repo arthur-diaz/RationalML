@@ -2,7 +2,7 @@
 
 from copy import deepcopy
 from dataclasses import replace
-import logging
+from time import perf_counter
 from typing import Any
 
 import numpy as np
@@ -22,10 +22,8 @@ from .optimization.cv import make_cv_splits
 from .optimization.optimizer import optimize_model
 from .preprocessing.builder import build_model_pipeline, transformed_feature_info
 from .result import AutoMLResult
+from .runtime import TrialProgress, print_run_info
 from .tasks import TaskType, resolve_task
-
-logger = logging.getLogger(__name__)
-
 
 class AutoML:
     """Accept AutoMLConfig or its keyword options, then fit a DataFrame."""
@@ -43,6 +41,7 @@ class AutoML:
         self.model_registry = model_registry
 
     def fit(self, df: pd.DataFrame) -> AutoMLResult:
+        started = perf_counter()
         config = replace(deepcopy(self.config))  # Revalidate mutable configuration.
         validate_dataframe(df, config.target, preprocessing=config.preprocessing)
         X = df.drop(columns=[config.target]).copy(deep=True)
@@ -100,10 +99,23 @@ class AutoML:
         baseline_name, baseline_fold_scores = evaluate_baseline(y_train, metric, task, folds)
         baseline_score = float(np.mean(baseline_fold_scores))
         optimized = []
-        for spec in specs:
-            if config.verbose:
-                logger.info("Optimizing %s using %s on train only", spec.name, metric.name)
-            optimized.append(optimize_model(spec, X_train, y_train, metric, config, folds=folds))
+        model_fit_times = {}
+        if config.verbose:
+            print_run_info(task.value, metric.name, len(specs), config.cv, config.n_trials, config.n_jobs)
+        progress = TrialProgress(len(specs) * config.n_trials) if config.verbose == 1 else None
+        interrupted = True
+        try:
+            for spec in specs:
+                model_started = perf_counter()
+                callbacks = {"on_trial": progress.update} if progress is not None else {}
+                optimized.append(optimize_model(spec, X_train, y_train, metric, config, folds=folds, **callbacks))
+                model_fit_times[spec.name] = perf_counter() - model_started
+                if progress is not None:
+                    progress.model_finished()
+            interrupted = False
+        finally:
+            if progress is not None:
+                progress.close(interrupted=interrupted)
         # Winner selection only sees CV scores. Stable ties retain model order.
         ordered = sorted(optimized, key=lambda item: item.score, reverse=metric.direction == "maximize")
         best = ordered[0]
@@ -116,12 +128,14 @@ class AutoML:
             ),
             "n_trials_completed": len(item.cv_results),
         } for rank, item in enumerate(ordered, start=1)]).set_index("model")
-        best_model = build_model_pipeline(best.spec, best.params, X_train, config.preprocessing)
         with threadpool_limits(limits=config.n_jobs if config.n_jobs > 0 else None):
+            final_started = perf_counter()
+            best_model = build_model_pipeline(best.spec, best.params, X_train, config.preprocessing)
             best_model.fit(X_train, y_train)
+            model_fit_times[best.spec.name] += perf_counter() - final_started
             test_metrics, test_predictions = evaluate_holdout(best_model, X_test, y_test, original_test, task, encoder)
         transformed_names, source_features = transformed_feature_info(best_model, X.columns)
-        return AutoMLResult(
+        result = AutoMLResult(
             task=task, target=config.target, leaderboard=leaderboard,
             best_model=best_model, best_model_name=best.spec.name,
             best_params=best.params.copy(), metrics=test_metrics.copy(),
@@ -138,4 +152,9 @@ class AutoML:
             _test_predictions=test_predictions,
             feature_schema=best_model.feature_schema_, transformed_feature_names=transformed_names,
             model_best_params={item.spec.name: item.params.copy() for item in optimized},
+            model_fit_times=model_fit_times,
         )
+        result.fit_time = perf_counter() - started
+        if config.verbose:
+            print("\n" + result.summary())
+        return result
