@@ -137,4 +137,5 @@ class AutoML:
             baseline_cv_std=float(np.std(baseline_fold_scores)), baseline_fold_scores=baseline_fold_scores,
             _test_predictions=test_predictions,
             feature_schema=best_model.feature_schema_, transformed_feature_names=transformed_names,
+            model_best_params={item.spec.name: item.params.copy() for item in optimized},
         )

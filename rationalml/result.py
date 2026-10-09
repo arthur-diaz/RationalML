@@ -16,6 +16,7 @@ from .evaluation.ranking import binary_ranking_table, regression_ranking_table, 
 from .preprocessing.schema import FeatureSchema
 from .reporting.config import ExcelReportConfig
 from .tasks import TaskType
+from .tracking.config import MLflowConfig
 
 
 @dataclass
@@ -42,6 +43,7 @@ class AutoMLResult:
     _test_predictions: pd.DataFrame = field(repr=False)
     feature_schema: FeatureSchema | None = None
     transformed_feature_names: tuple[str, ...] | None = None
+    model_best_params: dict[str, dict[str, Any]] = field(default_factory=dict)
 
     def __post_init__(self) -> None:
         self._test_predictions = self._test_predictions.copy(deep=True)
@@ -85,6 +87,14 @@ class AutoMLResult:
         from .reporting.excel import export_excel
 
         return export_excel(self, path, config=config, class_label=class_label)
+
+    def log_mlflow(
+        self, *, config: MLflowConfig | None = None, class_label: object | None = None,
+    ) -> str:
+        """Track this stored result in a new RationalML run and return its run_id."""
+        from .tracking.mlflow import log_result
+
+        return log_result(self, config=config, class_label=class_label)
 
     @property
     def positive_class(self) -> object:

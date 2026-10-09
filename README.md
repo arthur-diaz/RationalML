@@ -1,4 +1,4 @@
-# RationalML — V0.6.0
+# RationalML — V0.7.0
 
 RationalML compare et optimise des modèles de classification binaire,
 multiclass et de régression sur les
@@ -23,7 +23,7 @@ Python 3.10 ou plus, depuis ce dossier :
 
 ```powershell
 python -m venv .venv
-.\.venv\Scripts\python.exe -m pip install -e ".[boosting,legacy,test,excel]"
+.\.venv\Scripts\python.exe -m pip install -e ".[boosting,legacy,test,excel,mlflow]"
 .\.venv\Scripts\python.exe -m pytest -q -p no:cacheprovider
 .\.venv\Scripts\python.exe -m pip check
 ```
@@ -439,6 +439,72 @@ ne sont pas créés et un fichier existant est écrasé. Les limites de
 sauvegarde : aucune troncature silencieuse. Les textes trop longs ou les
 nombres infinis provoquent aussi une erreur explicite.
 
+## MLflow tracking
+
+MLflow est une couche optionnelle de traçabilité **après fit**, sans connexion
+au moteur d'optimisation :
+
+```shell
+pip install "rationalml[mlflow]"
+# Depuis ce dépôt : python -m pip install -e ".[mlflow]"
+```
+
+```python
+from rationalml import MLflowConfig
+
+run_id = result.log_mlflow(
+    config=MLflowConfig(
+        experiment_name="customer-churn",
+        run_name="churn-model",
+        tracking_uri="http://127.0.0.1:5000",
+    )
+)
+
+# Multiclass : ranking seulement pour la classe explicitement choisie.
+multiclass_result.log_mlflow(
+    config=MLflowConfig(experiment_name="segments", log_model=False),
+    class_label="gold",
+)
+```
+
+Chaque appel crée **un run RationalML et un enfant par modèle du leaderboard**,
+jamais un run par trial Optuna. Le parent contient les métadonnées explicites
+du fit, la baseline, le meilleur score CV et les métriques test préfixées
+`test_`. Chaque enfant conserve ses meilleurs paramètres dans
+`result.model_best_params`, ses diagnostics CV et le tag `rationalml.selected`.
+
+Les tables sont `leaderboard.json` (modèle en colonne), `cv_results.json`,
+`feature_importance.json` si disponible et `ranking.json` en binary/regression.
+En multiclass, ranking nécessite `class_label` ; une classe invalide est
+rejetée avant création des runs et la classe choisie est tracée dans le
+paramètre parent `ranking_class`. Aucun Top Segment n'est envoyé.
+`log_predictions=False` par défaut : aucune observation individuelle du
+holdout. L'opt-in ajoute `predictions.json` avec une première colonne d'index
+original, renommée par suffixe si son nom entre en conflit. Les features
+originales et datasets train/test ne sont jamais envoyés.
+
+`MLflowConfig` est frozen : `experiment_name="RationalML"`, `run_name=None`,
+`tracking_uri=None`, `log_model=True`, `log_predictions=False`, `nested=False`,
+`tags=None`. Les tags sont copiés et leurs valeurs scalaires converties en
+texte. Les clés `rationalml.*` et `mlflow.parentRunId` sont réservées ; un
+conflit produit `ConfigurationError`. Les paramètres structurés utilisent
+du JSON trié ; un objet non sérialisable est représenté par `<module.Class>`
+avec warning, sans adresse mémoire.
+
+`log_model=True` sérialise uniquement le Pipeline gagnant complet avec l'API
+MLflow 3 `name="model"` et cloudpickle, y compris le preprocessing utilisateur.
+Aucun input_example, signature inférée, fit, predict, predict_proba, autologging
+ou enregistrement au Model Registry. Le résultat reste inchangé ; seul le
+`run_id` est retourné.
+
+Une URI fournie est temporaire et restaurée même en cas d'échec ; None respecte
+la configuration MLflow existante. Aucun serveur n'est lancé. Un run utilisateur
+actif exige `nested=True` et la même URI : il reste actif, tandis que les runs
+RationalML sont fermés. L'expérience est sélectionnée/créée via son ID sans
+changer l'expérience active de l'utilisateur. Un échec du backend remonte.
+MLflow est importé uniquement à la demande ; s'il manque, `MissingDependencyError`
+indique l'installation de l'extra `mlflow` (`mlflow>=3.1,<4`).
+
 ## Protocole et responsabilités
 
 ```text
@@ -479,6 +545,15 @@ via `MetricRegistry.register(MetricSpec(...))`. Le modèle doit accepter
 random_state, déclarer `n_jobs_parameter` (ou None), supporter predict_proba en classification
 et définir `requires_scaling` pour basic. Aucune modification du moteur n'est
 nécessaire pour l'enregistrer.
+
+## Migration V0.6.0 → V0.7.0
+
+Les contrats ML/Excel sont conservés. `model_best_params` est ajouté avec
+`default_factory=dict`, sans casser les constructions manuelles existantes.
+Pour un ancien résultat sans ce champ, le gagnant utilise `best_params` ;
+les autres candidats gardent leurs diagnostics CV avec un warning indiquant
+que leurs paramètres sont indisponibles. Aucun paramètre n'est inventé.
+Installer l'extra `mlflow` uniquement pour utiliser `log_mlflow`.
 
 ## Migration V0.5.0 → V0.6.0
 
@@ -554,14 +629,24 @@ incorrects et leur contrat métier ambigu. `roc_auc` et `average_precision`
 
 ## Vérification et limites
 
-Vérification V0.6.0 : **585 tests réussis en 53,21 s**, dont **112 nouveaux cas**,
-**1 warning attendu** (classe positive implicite sur labels chaînes),
+Vérification V0.7.0 : **689 tests réussis en 249,84 s**, dont **104 nouveaux cas**,
+**2 warnings** (classe positive implicite et dépréciation SQLAlchemy `noload`
+dans le store SQL MLflow),
 **0 échec et 0 skip**. LightGBM et XGBoost sont installés et testés.
-`pip check` retourne `No broken requirements found.` sans puis avec l'extra
-Excel ; les versions API et installation éditable sont `RationalML==0.6.0`.
+`pip check` retourne `No broken requirements found.` avant puis après installation
+de l'extra MLflow ; les versions API et installation éditable sont `RationalML==0.7.0`.
 Openpyxl **3.0.10**, version minimale déclarée, est testé par écriture directe.
+MLflow **3.17.0** est testé avec SQLite et des artefacts locaux sous `tmp_path`,
+sans serveur et avec les connexions réseau bloquées dans les tests.
 
-Les 473 cas V0.5 sont conservés sans modification. Les nouveaux tests relisent
+Les 585 cas V0.6 sont conservés sans modification. Les nouveaux tests MLflow
+relisent les runs, leurs tables et le Pipeline sérialisé ; ils vérifient
+les paramètres par candidat, exactement quatre runs pour trois modèles et
+cinq trials, l'opt-in des prédictions et le choix multiclass. Fit/predict,
+Optuna, métriques et transformations sont bloqués pendant le tracking dans
+les trois modes preprocessing et tâches, avec ou sans modèle. Les tests
+couvrent l'import lazy, les runs utilisateurs, les échecs backend, la restauration
+des URI/variables d'environnement et l'immutabilité. Les tests Excel relisent
 les classeurs pour les trois tâches : données, types numériques, formats,
 classes explicites, index, prédictions optionnelles, limites et immutabilité.
 Ils bloquent fit/predict/predict_proba, transformations, métriques et Optuna,
@@ -581,11 +666,12 @@ fit final sur le train seulement et la stabilité de la sélection lorsque
 seules les features du holdout changent.
 
 La mémoire du OneHot dense basic et la matrice CI des versions minimales
+(dont MLflow 3.1, non exécuté dans cet environnement)
 restent à surveiller. Les colonnes entièrement manquantes dans un fold basic
 restent une erreur ; les constantes basic peuvent avertir par fold/essai.
-Openpyxl est ajouté uniquement à l'extra `excel`, sans dépendance obligatoire
-supplémentaire ni feature engineering automatique
-n'est introduit. Datetime automatique, sélection de
+Openpyxl et MLflow restent dans leurs extras respectifs, sans dépendance obligatoire
+supplémentaire. Aucun feature engineering automatique n'est introduit.
+Datetime automatique, sélection de
 features, outliers, logs, target encoding, encodage haute cardinalité, SHAP,
-MLflow, optimisation de seuil, calibration, CatBoost
-et group/time split restent hors V0.6. Aucune fonctionnalité V0.7 n'est ajoutée.
+optimisation de seuil, calibration, CatBoost, Model Registry/deployment
+et group/time split restent hors V0.7. Aucune fonctionnalité V0.8 n'est ajoutée.
