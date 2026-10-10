@@ -6,7 +6,7 @@ build-backend = "setuptools.build_meta"
 license = "Apache-2.0"
 license-files = ["LICENSE"]
 name = "RationalML"
-version = "1.0.0"
+version = "1.1.0"
 description = "Optuna model comparison for prepared classification and regression data with optional leakage-safe preprocessing"
 readme = "README.md"
 requires-python = ">=3.10"
